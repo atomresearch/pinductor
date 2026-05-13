@@ -6,15 +6,15 @@ of them depend on agent state — and are unit-testable in isolation.
 
 Module contents:
 
-- ``ELBO_FLOOR``: finite floor used to clamp ``-inf`` per-episode scores
+- ``LIKELIHOOD_FLOOR``: finite floor used to clamp ``-inf`` per-episode scores
   so that np.mean of a partially-collapsed episode set stays meaningful.
-- ``elbo_from_episode_metrics``: aggregate per-episode pf_scores into a
+- ``likelihood_from_episode_metrics``: aggregate per-episode pf_scores into a
   single number for the REx selection step.
 - ``jensen_shannon_divergence``: symmetric distribution distance used by
   the legacy single-model REx loop and a couple of analysis scripts.
 
-Backwards-compat aliases (same module): ``_ELBO_FLOOR``,
-``_elbo_from_episode_metrics``, ``jsd``.
+Private convenience aliases (same module): ``_LIKELIHOOD_FLOOR``,
+``_likelihood_from_episode_metrics``, ``jsd``.
 """
 
 from __future__ import annotations
@@ -29,10 +29,10 @@ import numpy as np
 # episode. Aggregating with np.mean would propagate -inf and lose all
 # discriminative power between models that fail on 1/N episodes vs N/N.
 # We clamp to a finite floor that is "very bad but distinguishable".
-ELBO_FLOOR: float = -100.0
+LIKELIHOOD_FLOOR: float = -100.0
 
 
-def elbo_from_episode_metrics(
+def likelihood_from_episode_metrics(
     episode_metrics: Optional[List[Dict[str, Any]]],
     msc_weight: float = 0.0,
     aggregation: str = "mean",
@@ -44,17 +44,17 @@ def elbo_from_episode_metrics(
     where ``reducer`` is ``np.mean`` (default) or ``np.median`` when
     ``aggregation="median"`` (Fix F2 / R#2-A, Huber 1964 robust stats).
 
-    Both pf_score and msc_score are clamped to :data:`ELBO_FLOOR` so that
+    Both pf_score and msc_score are clamped to :data:`LIKELIHOOD_FLOOR` so that
     a single particle collapse on one episode does not destroy the score
-    of the entire run. Returns :data:`ELBO_FLOOR` when no usable
+    of the entire run. Returns :data:`LIKELIHOOD_FLOOR` when no usable
     episodes are available.
     """
-    return elbo_components_from_episode_metrics(
+    return likelihood_components_from_episode_metrics(
         episode_metrics, msc_weight=msc_weight, aggregation=aggregation
     )[0]
 
 
-def elbo_components_from_episode_metrics(
+def likelihood_components_from_episode_metrics(
     episode_metrics: Optional[List[Dict[str, Any]]],
     msc_weight: float = 0.0,
     aggregation: str = "mean",
@@ -70,14 +70,14 @@ def elbo_components_from_episode_metrics(
             episode — Fix F2 a.k.a. R#2-A). Robust statistics (Huber 1964)
             justify the median choice when the dataset contains outliers
             caused by ``pf_score=-inf`` collapses that the M6 clamp brings
-            back to ``ELBO_FLOOR`` but still pulls the mean down.
+            back to ``LIKELIHOOD_FLOOR`` but still pulls the mean down.
 
     Returns ``(clamped_score, diagnostics)`` where ``diagnostics`` has
     keys: ``raw_mean``, ``clamped_mean``, ``n_collapsed``, ``n_valid``,
     ``min_raw``, ``max_raw``, ``aggregation`` and (if ``msc_weight > 0``)
     ``msc_mean``.
 
-    Callers that only need the scalar use :func:`elbo_from_episode_metrics`.
+    Callers that only need the scalar use :func:`likelihood_from_episode_metrics`.
     The diagnostics dict is intended for logging so the user can see
     whether the clamp is masking catastrophic models — the audit's M6
     concern: a hard floor at -100 hides the gap between "bad" and
@@ -89,34 +89,40 @@ def elbo_components_from_episode_metrics(
         )
     reducer = np.median if aggregation == "median" else np.mean
     diag: Dict[str, float] = {
-        "raw_mean": float(ELBO_FLOOR),
-        "clamped_mean": float(ELBO_FLOOR),
+        "raw_mean": float(LIKELIHOOD_FLOOR),
+        "clamped_mean": float(LIKELIHOOD_FLOOR),
         "n_collapsed": 0.0,
         "n_valid": 0.0,
-        "min_raw": float(ELBO_FLOOR),
-        "max_raw": float(ELBO_FLOOR),
+        "min_raw": float(LIKELIHOOD_FLOOR),
+        "max_raw": float(LIKELIHOOD_FLOOR),
         "aggregation": aggregation,
     }
     if not episode_metrics:
-        return ELBO_FLOOR, diag
+        return LIKELIHOOD_FLOOR, diag
     valid = [m for m in episode_metrics if m and "pf_score" in m]
     if not valid:
-        return ELBO_FLOOR, diag
+        return LIKELIHOOD_FLOOR, diag
     raw = [float(m["pf_score"]) for m in valid]
-    clamped = [max(v, ELBO_FLOOR) for v in raw]
+    clamped = [max(v, LIKELIHOOD_FLOOR) for v in raw]
     base = float(reducer(clamped))
     finite_raw = [v for v in raw if math.isfinite(v)]
     diag["clamped_mean"] = base
     diag["raw_mean"] = (
-        float(reducer(finite_raw)) if finite_raw else float(ELBO_FLOOR)
+        float(reducer(finite_raw)) if finite_raw else float(LIKELIHOOD_FLOOR)
     )
     diag["n_valid"] = float(len(valid))
-    diag["n_collapsed"] = float(sum(1 for v in raw if not math.isfinite(v) or v <= ELBO_FLOOR))
+    diag["n_collapsed"] = float(
+        sum(
+            1
+            for v in raw
+            if not math.isfinite(v) or v <= LIKELIHOOD_FLOOR
+        )
+    )
     diag["min_raw"] = float(min(raw))
     diag["max_raw"] = float(max(raw))
     if msc_weight > 0.0:
-        msc_vals = [m.get("msc_score", ELBO_FLOOR) for m in valid]
-        finite_msc = [max(v, ELBO_FLOOR) for v in msc_vals]
+        msc_vals = [m.get("msc_score", LIKELIHOOD_FLOOR) for m in valid]
+        finite_msc = [max(v, LIKELIHOOD_FLOOR) for v in msc_vals]
         if finite_msc:
             msc_agg = float(reducer(finite_msc))
             base += msc_weight * msc_agg
@@ -187,10 +193,8 @@ def jensen_shannon_divergence(
 
 
 # ---------------------------------------------------------------------------
-# Backwards-compat aliases — earlier code referenced these private names
-# from partially_obs_planning_agent. They remain importable here so any
-# external script (e.g. analysis notebooks) can still use them.
+# Private aliases used by partially_obs_planning_agent and analysis helpers.
 # ---------------------------------------------------------------------------
-_ELBO_FLOOR = ELBO_FLOOR
-_elbo_from_episode_metrics = elbo_from_episode_metrics
+_LIKELIHOOD_FLOOR = LIKELIHOOD_FLOOR
+_likelihood_from_episode_metrics = likelihood_from_episode_metrics
 jsd = jensen_shannon_divergence

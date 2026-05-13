@@ -383,7 +383,7 @@ def launch_group(
         "prompt_tokens": parsed.prompt_tokens,
         "completion_tokens": parsed.completion_tokens,
         "llm_calls": parsed.llm_calls,
-        "elbo_final": parsed.elbo_final,
+        "likelihood_final": parsed.likelihood_final,
     }
     (atom_out_dir / "result.json").write_text(json.dumps(result, indent=2))
 
@@ -409,7 +409,7 @@ def launch_group(
             registry.mark_done(
                 rid,
                 reward=r, success=success, steps_to_goal=steps,
-                elbo_final=parsed.elbo_final,
+                likelihood_final=parsed.likelihood_final,
                 prompt_tokens=tok_p_per_ep,
                 completion_tokens=tok_c_per_ep,
                 cost_usd=cost_per_ep,

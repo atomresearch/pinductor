@@ -454,7 +454,7 @@ def select_diverse_committee(
 
     Args:
         candidates: (name, model) pairs from REx iterations.
-        scores: ELBO score for each candidate (higher = better).
+        scores: Likelihood score for each candidate (higher = better).
         test_states: states to test disagreement on (from belief particles).
         actions: available actions.
         K: target committee size.

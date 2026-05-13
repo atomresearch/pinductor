@@ -28,7 +28,7 @@ strictly from observations, actions, and rewards.
    │            │  S_jk, D_jk, Q_jk          ▼                    │
    │            │              ┌─────────────────────────────┐    │
    │            │              │ Particle filter score       │    │
-   │            │              │ ELBOEvaluator (Eq. 7 / 8)   │    │
+   │            │              │ LikelihoodEvaluator (Eq. 7 / 8)   │    │
    │            │              │ + QBC vote entropy (Eq. 9)  │    │
    │            └──────────────┴─────────────┬───────────────┘    │
    │                                          ▼                   │
@@ -387,7 +387,7 @@ python scripts/paper/paper_runner.py run E1 --envs lava --conditions ours --seed
 │   ├── structs.py                 #   ReplayBuffer, Episode, Observation
 │   └── utils.py                   #   OpenRouter client, log dirs, RNG seeding
 ├── particle_filtering/            # Belief scoring helpers
-│   ├── get_score_metrics.py       #   ELBOEvaluator (kernel pseudo-likelihood)
+│   ├── get_score_metrics.py       #   LikelihoodEvaluator (kernel pseudo-likelihood)
 │   ├── model_disagreement.py      #   QBC vote-entropy disagreement
 │   └── belief_quality_scorer.py   #   Optional oracle scorer (not used in paper)
 ├── curtis_baseline/               # Reused POMDP Coder baseline

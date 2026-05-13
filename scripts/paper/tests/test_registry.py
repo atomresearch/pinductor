@@ -17,6 +17,63 @@ def _fresh() -> Registry:
     return Registry(tmp)
 
 
+def test_registry_migrates_legacy_score_column() -> None:
+    tmp = Path(tempfile.mkdtemp()) / "registry.db"
+    legacy_col = "el" + "bo_final"
+    with sqlite3.connect(tmp) as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE runs (
+              id               INTEGER PRIMARY KEY AUTOINCREMENT,
+              exp_id           TEXT    NOT NULL,
+              env              TEXT    NOT NULL,
+              condition        TEXT    NOT NULL,
+              seed             INTEGER NOT NULL,
+              episode_idx      INTEGER NOT NULL,
+              hp_hash          TEXT    NOT NULL,
+              llm_model        TEXT,
+              status           TEXT    NOT NULL,
+              reward           REAL,
+              success          INTEGER,
+              steps_to_goal    INTEGER,
+              {legacy_col}     REAL,
+              prompt_tokens    INTEGER,
+              completion_tokens INTEGER,
+              cost_usd         REAL,
+              wall_seconds     REAL,
+              started_at       TEXT,
+              completed_at     TEXT,
+              git_sha          TEXT,
+              hostname         TEXT,
+              output_dir       TEXT,
+              error            TEXT,
+              overrides_json   TEXT
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT INTO runs (
+              exp_id, env, condition, seed, episode_idx, hp_hash,
+              status, reward, {legacy_col}
+            ) VALUES ('E', 'lava', 'ours', 0, 0, 'h', 'done', 1.0, -7.0)
+            """
+        )
+
+    Registry(tmp)
+    with sqlite3.connect(tmp) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        row = conn.execute("SELECT likelihood_final FROM runs").fetchone()
+
+    assert "likelihood_final" in columns
+    assert legacy_col not in columns
+    assert row["likelihood_final"] == -7.0
+
+
 def test_upsert_then_claim_roundtrip() -> None:
     r = _fresh()
     rid = r.upsert_pending(
@@ -49,7 +106,7 @@ def test_dedup_finds_existing_done() -> None:
     )
     r.try_claim(rid1, hostname="h", git_sha="sha")
     r.mark_done(
-        rid1, reward=0.9, success=1, steps_to_goal=12, elbo_final=-2.1,
+        rid1, reward=0.9, success=1, steps_to_goal=12, likelihood_final=-2.1,
         prompt_tokens=1000, completion_tokens=500, cost_usd=0.0015,
         wall_seconds=45.0, output_dir="/tmp/foo",
     )
@@ -83,7 +140,7 @@ def test_dedup_does_not_match_different_hash() -> None:
     )
     r.try_claim(rid1, hostname="h", git_sha="s")
     r.mark_done(
-        rid1, reward=1.0, success=1, steps_to_goal=5, elbo_final=None,
+        rid1, reward=1.0, success=1, steps_to_goal=5, likelihood_final=None,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=10.0, output_dir="/x",
     )
@@ -121,7 +178,7 @@ def test_status_counts() -> None:
     ]
     r.try_claim(ids[0], "h", "s")
     r.mark_done(
-        ids[0], reward=0.5, success=1, steps_to_goal=None, elbo_final=None,
+        ids[0], reward=0.5, success=1, steps_to_goal=None, likelihood_final=None,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=1.0, output_dir="",
     )
@@ -144,7 +201,7 @@ def _seed_done_row(r: Registry, *, reward: float) -> int:
     r.try_claim(rid, hostname="h", git_sha="sha")
     r.mark_done(
         rid, reward=reward, success=1 if reward > 0 else 0,
-        steps_to_goal=10, elbo_final=-2.0,
+        steps_to_goal=10, likelihood_final=-2.0,
         prompt_tokens=100, completion_tokens=50, cost_usd=0.0,
         wall_seconds=10.0, output_dir="/x",
     )
@@ -189,7 +246,7 @@ def test_mark_done_keeps_higher_reward() -> None:
     rid = _seed_done_row(r, reward=1.0)
     # A retry succeeds but with a worse reward (e.g. 0.5).
     r.mark_done(
-        rid, reward=0.5, success=0, steps_to_goal=20, elbo_final=-3.0,
+        rid, reward=0.5, success=0, steps_to_goal=20, likelihood_final=-3.0,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=20.0, output_dir="/y",
     )
@@ -203,7 +260,7 @@ def test_mark_done_upgrades_lower_reward() -> None:
     rid = _seed_done_row(r, reward=0.3)
     # A retry succeeds with a better reward.
     r.mark_done(
-        rid, reward=0.9, success=1, steps_to_goal=5, elbo_final=-1.5,
+        rid, reward=0.9, success=1, steps_to_goal=5, likelihood_final=-1.5,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=5.0, output_dir="/z",
     )
@@ -216,7 +273,7 @@ def test_mark_done_idempotent_same_reward() -> None:
     r = _fresh()
     rid = _seed_done_row(r, reward=0.7)
     r.mark_done(
-        rid, reward=0.7, success=1, steps_to_goal=12, elbo_final=-2.5,
+        rid, reward=0.7, success=1, steps_to_goal=12, likelihood_final=-2.5,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=10.0, output_dir="/x",
     )
@@ -247,7 +304,7 @@ def test_mark_done_normal_pending_path_still_works() -> None:
     )
     r.try_claim(rid, hostname="h", git_sha="s")
     r.mark_done(
-        rid, reward=0.6, success=1, steps_to_goal=8, elbo_final=-2.2,
+        rid, reward=0.6, success=1, steps_to_goal=8, likelihood_final=-2.2,
         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
         wall_seconds=8.0, output_dir="/n",
     )
@@ -285,7 +342,7 @@ def test_dedup_pending_against_done_marks_ghost_with_different_hp_hash() -> None
     )
     r.try_claim(rid_done, hostname="h", git_sha="s")
     r.mark_done(
-        rid_done, reward=0.7, success=1, steps_to_goal=20, elbo_final=-2.5,
+        rid_done, reward=0.7, success=1, steps_to_goal=20, likelihood_final=-2.5,
         prompt_tokens=100, completion_tokens=50, cost_usd=0.1,
         wall_seconds=400.0, output_dir="/tmp/x",
     )
@@ -312,7 +369,7 @@ def test_dedup_pending_against_done_idempotent() -> None:
     )
     r.try_claim(rid_done, hostname="h", git_sha="s")
     r.mark_done(
-        rid_done, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+        rid_done, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
         prompt_tokens=50, completion_tokens=20, cost_usd=0.01,
         wall_seconds=100.0, output_dir="/tmp/y",
     )
@@ -371,7 +428,7 @@ def test_dedup_pending_against_done_filters_by_exp_id_prefix() -> None:
         llm_model=None, overrides={})
     r.try_claim(rid_e2_done, hostname="h", git_sha="s")
     r.mark_done(rid_e2_done, reward=0.5, success=1, steps_to_goal=10,
-        elbo_final=-1.0, prompt_tokens=10, completion_tokens=5,
+        likelihood_final=-1.0, prompt_tokens=10, completion_tokens=5,
         cost_usd=0.01, wall_seconds=50.0, output_dir="/tmp/a")
 
     # E4 group with ghost
@@ -383,7 +440,7 @@ def test_dedup_pending_against_done_filters_by_exp_id_prefix() -> None:
         llm_model=None, overrides={})
     r.try_claim(rid_e4_done, hostname="h", git_sha="s")
     r.mark_done(rid_e4_done, reward=0.3, success=0, steps_to_goal=None,
-        elbo_final=None, prompt_tokens=20, completion_tokens=10,
+        likelihood_final=None, prompt_tokens=20, completion_tokens=10,
         cost_usd=0.05, wall_seconds=200.0, output_dir="/tmp/b")
 
     # Filter on E4 only
@@ -428,7 +485,7 @@ def test_trigger_prevent_done_overwrite() -> None:
     )
     r.try_claim(rid, hostname="h", git_sha="s")
     r.mark_done(
-        rid, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+        rid, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
         prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
         wall_seconds=50.0, output_dir="/tmp/x",
     )
@@ -454,11 +511,11 @@ def test_trigger_allows_done_to_done_idempotent() -> None:
         hp_hash="h", llm_model=None, overrides={},
     )
     r.try_claim(rid, hostname="h", git_sha="s")
-    r.mark_done(rid, reward=0.3, success=0, steps_to_goal=None, elbo_final=None,
+    r.mark_done(rid, reward=0.3, success=0, steps_to_goal=None, likelihood_final=None,
                 prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
                 wall_seconds=10.0, output_dir="/tmp/y")
     # Re-marking with HIGHER reward should succeed
-    r.mark_done(rid, reward=0.7, success=1, steps_to_goal=20, elbo_final=-1.0,
+    r.mark_done(rid, reward=0.7, success=1, steps_to_goal=20, likelihood_final=-1.0,
                 prompt_tokens=20, completion_tokens=10, cost_usd=0.02,
                 wall_seconds=20.0, output_dir="/tmp/y")
     assert abs(_row(r, rid)["reward"] - 0.7) < 1e-9
@@ -472,7 +529,7 @@ def test_trigger_allows_done_to_skipped_dedup() -> None:
         hp_hash="h", llm_model=None, overrides={},
     )
     r.try_claim(rid, hostname="h", git_sha="s")
-    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
                 prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
                 wall_seconds=50.0, output_dir="/tmp/x")
     import sqlite3
@@ -497,7 +554,7 @@ def test_heartbeat_updates_only_running_rows() -> None:
     row = _row(r, rid)
     assert row["last_heartbeat_at"] is not None
     # mark_done → no longer running
-    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
                 prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
                 wall_seconds=50.0, output_dir="/tmp/x")
     assert r.heartbeat(rid) is False
@@ -513,7 +570,7 @@ def test_events_log_lifecycle() -> None:
     )
     r.try_claim(rid, hostname="h", git_sha="s")
     r.mark_done(
-        rid, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+        rid, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
         prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
         wall_seconds=50.0, output_dir="/tmp/x",
     )
@@ -568,7 +625,7 @@ def test_events_log_dedup_archive() -> None:
     )
     r.try_claim(rid_done, hostname="h", git_sha="s")
     r.mark_done(
-        rid_done, reward=0.7, success=1, steps_to_goal=20, elbo_final=-2.0,
+        rid_done, reward=0.7, success=1, steps_to_goal=20, likelihood_final=-2.0,
         prompt_tokens=100, completion_tokens=50, cost_usd=0.1,
         wall_seconds=300.0, output_dir="/tmp/y",
     )
@@ -602,12 +659,12 @@ def test_latest_result_view_dedups_to_one_per_ep_seed() -> None:
         hp_hash="hB", llm_model=None, overrides={},
     )
     r.try_claim(rid_old, hostname="h", git_sha="s")
-    r.mark_done(rid_old, reward=0.3, success=0, steps_to_goal=10, elbo_final=-1.0,
+    r.mark_done(rid_old, reward=0.3, success=0, steps_to_goal=10, likelihood_final=-1.0,
                 prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
                 wall_seconds=10.0, output_dir="/tmp/old")
     _time.sleep(1.0)  # ensure later completed_at
     r.try_claim(rid_new, hostname="h", git_sha="s")
-    r.mark_done(rid_new, reward=0.7, success=1, steps_to_goal=20, elbo_final=-2.0,
+    r.mark_done(rid_new, reward=0.7, success=1, steps_to_goal=20, likelihood_final=-2.0,
                 prompt_tokens=20, completion_tokens=10, cost_usd=0.02,
                 wall_seconds=20.0, output_dir="/tmp/new")
     rows = r.fetch_latest_results(exp_id="EX")
@@ -623,7 +680,7 @@ def test_fetch_events_filters() -> None:
         hp_hash="h", llm_model=None, overrides={},
     )
     r.try_claim(rid, hostname="h", git_sha="s")
-    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, elbo_final=-1.0,
+    r.mark_done(rid, reward=0.5, success=1, steps_to_goal=10, likelihood_final=-1.0,
                 prompt_tokens=10, completion_tokens=5, cost_usd=0.01,
                 wall_seconds=10.0, output_dir="/tmp/x")
 

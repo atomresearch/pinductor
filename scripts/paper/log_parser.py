@@ -27,7 +27,10 @@ _RE_OPENROUTER_TOKENS = re.compile(
 _RE_AVG_REWARD = re.compile(
     r"Average Episode Reward:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
 )
-_RE_ELBO = re.compile(r"\[ELBO\].*?([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*$")
+_FLOAT = r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+_RE_LIKELIHOOD = re.compile(
+    rf"(?:\[LIKELIHOOD\]\s+clamped=|Likelihood:\s*){_FLOAT}"
+)
 _RE_STEPS = re.compile(r"\bStep\s+(\d+)")
 
 
@@ -39,7 +42,7 @@ class ParsedRun:
     completion_tokens: int = 0
     llm_calls: int = 0
     steps_per_episode: List[int] = field(default_factory=list)
-    elbo_final: Optional[float] = None
+    likelihood_final: Optional[float] = None
 
 
 def parse(log_text: str) -> ParsedRun:
@@ -95,9 +98,9 @@ def parse(log_text: str) -> ParsedRun:
             out.avg_reward = float(m.group(1))
             continue
 
-        m = _RE_ELBO.search(line)
+        m = _RE_LIKELIHOOD.search(line)
         if m:
-            out.elbo_final = float(m.group(1))
+            out.likelihood_final = float(m.group(1))
 
     # Commit du dernier épisode
     if current_episode is not None:

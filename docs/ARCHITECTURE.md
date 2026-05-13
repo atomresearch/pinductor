@@ -26,7 +26,7 @@ module.
    │            │                                  ▼                  │
    │   ┌────────┴──────────────┐   ┌──────────────────────────────┐   │
    │   │  Near-best selector   │   │  Particle filter score       │   │
-   │   │  Eq. 11–12            │◀──│  ELBOEvaluator.evaluate_elbo │   │
+   │   │  Eq. 11–12            │◀──│  LikelihoodEvaluator.evaluate_likelihood │   │
    │   └───────────────────────┘   │  (Eq. 7 / Eq. 8)             │   │
    │            │                  └──────────────┬───────────────┘   │
    │            │                                  │                  │
@@ -64,13 +64,13 @@ and a fresh REx round (top of the diagram) is triggered. This is the
 | --- | --- |
 | **Algorithm 1** (Belief-based Pinductor refinement) | `uncertain_worms/policies/partially_obs_planning_agent.py::LLMPartiallyObsPlanningAgent.joint_update_models_rex` |
 | Distance kernel `d(ô, o)` (§3, §5) | `uncertain_worms/structs.py::MinigridObservation.distance_soft` |
-| **Eq. 7** Distance-kernel log-likelihood per step | `particle_filtering/get_score_metrics.py::ELBOEvaluator._step_score` |
-| **Eq. 8** Aggregated kernel pseudo-likelihood | `particle_filtering/get_score_metrics.py::ELBOEvaluator.evaluate_elbo` (and `evaluate_score` for the public wrapper) |
+| **Eq. 7** Distance-kernel log-likelihood per step | `particle_filtering/get_score_metrics.py::LikelihoodEvaluator._step_score` |
+| **Eq. 8** Aggregated kernel pseudo-likelihood | `particle_filtering/get_score_metrics.py::LikelihoodEvaluator.evaluate_likelihood` (and `evaluate_score` for the public wrapper) |
 | **Eq. 9** QBC vote entropy across the committee | `particle_filtering/model_disagreement.py::committee_prediction_entropy` (+ `DisagreementDetector` for per-context aggregation) |
 | **Eq. 10** UCB1 parent selection | `uncertain_worms/policies/rex_helpers.py::ucb1_select` |
-| **Eq. 11 / 12** Near-best set + softmax final selector | Inline in `partially_obs_planning_agent.py::joint_update_models_rex` (search for `softmax_T`, `near_best`); driven by `elbo_softmax_temperature` |
+| **Eq. 11 / 12** Near-best set + softmax final selector | Inline in `partially_obs_planning_agent.py::joint_update_models_rex` (search for `softmax_T`, `near_best`); driven by `likelihood_softmax_temperature` |
 | **App. B.1** PO_DAStar belief-space planner | `uncertain_worms/planners/PO_DAStar.py` |
-| **App. B.2** Particle filter + rejuvenation | `partially_obs_planning_agent.py::LLMPartiallyObsPlanningAgent.update_belief` + `ELBOEvaluator._rejuvenate` / `_rejuvenate_step` |
+| **App. B.2** Particle filter + rejuvenation | `partially_obs_planning_agent.py::LLMPartiallyObsPlanningAgent.update_belief` + `LikelihoodEvaluator._rejuvenate` / `_rejuvenate_step` |
 | **App. B.3** UCB1 tree expansion | `rex_helpers.py::ucb1_select` + agent's `_select_node_to_refine` |
 | **App. D** Hyperparameter table | Frozen per-condition in `scripts/paper/configs/<cond>/<env>.yaml` |
 | **App. E** Demonstration buffers | `uncertain_worms/environments/minigrid/trajectory_data/*_paper_N*.pkl` |
@@ -94,7 +94,7 @@ appears in **every** `scripts/paper/configs/ours/*.yaml`:
 | κ | `agent.kernel_bandwidth` | 0.2 | Distance-kernel sharpness in Eq. 7 |
 | K | `agent.num_particles` | 10 | Particle belief size |
 | M | `agent.num_model_attempts` | 5 | Candidates per REx round |
-| T | `agent.elbo_softmax_temperature` | 0.1 | Final-selection softmax temperature (Eq. 12) |
+| T | `agent.likelihood_softmax_temperature` | 0.1 | Final-selection softmax temperature (Eq. 12) |
 | c | `agent.ucb1_c` | 1.0 | UCB1 exploration coefficient (Eq. 10) |
 | α | `agent.entropy_coeff` | 1.0 | Planner entropy bonus |
 | λ | `agent.lambda_coeff` | 0.1 | Planner-side cost coefficient |
@@ -136,7 +136,7 @@ default scattered across the codebase.
 
 1. `uncertain_worms/policies/partially_obs_planning_agent.py` — start at
    the module docstring (Algorithm 1 pseudocode).
-2. `particle_filtering/get_score_metrics.py` — `ELBOEvaluator.evaluate`
+2. `particle_filtering/get_score_metrics.py` — `LikelihoodEvaluator.evaluate_likelihood`
    is the scoring loop.
 3. `particle_filtering/model_disagreement.py` — `DisagreementDetector`
    (per-context committee aggregation) plus the global

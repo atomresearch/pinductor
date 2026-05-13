@@ -23,7 +23,7 @@ the true position.
 Empirical motivation
 --------------------
 During deployment the PF belief can concentrate on the true agent
-position while aggregate ELBO scoring still dilutes the belief-vs-real
+position while aggregate Likelihood scoring still dilutes the belief-vs-real
 signal across observationally redundant steps. This scorer reads the
 belief-vs-real match at every step directly.
 

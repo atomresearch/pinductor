@@ -67,4 +67,4 @@ agent:
   kernel_bandwidth: 0.2
   use_ucb1_selection: true
   ucb1_c: 1.0
-  elbo_softmax_temperature: 0.1
+  likelihood_softmax_temperature: 0.1

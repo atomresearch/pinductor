@@ -3,7 +3,7 @@
 Three modules:
 
 * :mod:`~particle_filtering.get_score_metrics` — the
-  :class:`~particle_filtering.get_score_metrics.ELBOEvaluator` class
+  :class:`~particle_filtering.get_score_metrics.LikelihoodEvaluator` class
   implements the distance-kernel pseudo-likelihood (paper Eq. 7 / Eq. 8),
   including bootstrap particle filtering with rejuvenation and the
   posterior expected log-likelihood used as the model-ranking score.

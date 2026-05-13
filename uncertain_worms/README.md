@@ -40,7 +40,7 @@ uncertain_worms/
 ## Cross-package wiring
 
 * `LLMPartiallyObsPlanningAgent` imports
-  `particle_filtering.get_score_metrics.ELBOEvaluator` to compute the
+  `particle_filtering.get_score_metrics.LikelihoodEvaluator` to compute the
   paper-grade kernel pseudo-likelihood and
   `particle_filtering.model_disagreement` for QBC vote entropy.
 * All Hydra `_target_` paths in `scripts/paper/configs/ours/*.yaml`

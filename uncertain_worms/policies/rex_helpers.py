@@ -12,7 +12,7 @@ readable and the algorithmic choices can be A/B-tested in isolation.
    reward_func is *alive*: replay each trajectory's own actions on the
    learned model and count episodes where any non-zero reward or
    terminal step is predicted. A model whose ``reward_func`` returns
-   ``(0, False)`` everywhere scores RR=0, which an ELBO-only signal
+   ``(0, False)`` everywhere scores RR=0, which a likelihood-only signal
    cannot detect because obs-explanation can be fine even with a dead
    reward head.
 

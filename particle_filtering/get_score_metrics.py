@@ -224,7 +224,7 @@ class ScoreEvaluator:
         # relative to the ~90% trivially-zero middle steps. Sum of weights
         # is normalised to equal episode length T so the total_score scale
         # stays comparable to the baseline (important for the Beta update
-        # delta and ELBO clamping). Default False = byte-identical to the
+        # delta and likelihood clamping). Default False = byte-identical to the
         # pre-I3 formula.
         self.event_weighted_scoring = event_weighted_scoring
         # Preliminary #8 — explicit reward MSE term in ``pf_score``.
@@ -234,7 +234,7 @@ class ScoreEvaluator:
         # ``score_rew`` is already per-step ≤ 0 (MSE is negative of
         # error), so positive ``reward_weight`` increases the penalty
         # for reward-prediction errors, making the scorer reward-aware
-        # on top of the observation-only ELBO. Requires ``decompose=True``
+        # on top of the observation-only likelihood. Requires ``decompose=True``
         # to have the per-step decomposition — silently ignored otherwise.
         # Default 0.0 = byte-identical to pre-feature formula.
         self.reward_weight = float(reward_weight)
@@ -494,7 +494,7 @@ class ScoreEvaluator:
         return episode_actions, episode_observations, episode_previous_observations, episode_rewards, episode_terminated, err_str, episode_metrics
 
 
-    def evaluate_elbo(
+    def evaluate_likelihood(
         self,
         replay_buffer: ReplayBuffer,
         use_log_space: bool = True,
@@ -1161,7 +1161,7 @@ class ScoreEvaluator:
         # Alternative scorers — opt-in via ``scoring_mode``. Each replaces
         # ``total_score`` with a scalar that shares the *higher is better*
         # convention of ``energy`` / ``prequential`` so that
-        # ``_elbo_components_from_episode_metrics`` can consume it
+        # ``_likelihood_components_from_episode_metrics`` can consume it
         # Experimental scoring modes (whiteness, betting, bisim,
         # pf_self_consistency, prediction_persistence, event, hybrid_pf_event)
         # were ablation probes during development and depend on modules that
@@ -2000,5 +2000,5 @@ class ScoreEvaluator:
         return ParticleBelief(particles=dict(int_particles))
 
 
-# Backward compatibility with code paths importing ``ELBOEvaluator``.
-ELBOEvaluator = ScoreEvaluator
+# Public likelihood-nomenclature alias for the generic score evaluator.
+LikelihoodEvaluator = ScoreEvaluator

@@ -26,10 +26,10 @@ LLMPartiallyObsPlanningAgent
    │           ├─ exec()s it into a sandbox and grabs four callables
    │           │   (initial_func, observation_func, transition_func, reward_func)
    │           └─ wraps them via initial_model_translator, …
-   ├─ ELBOEvaluator.evaluate_elbo               # particle-filter score, Eq. 7
+   ├─ LikelihoodEvaluator.evaluate_likelihood               # particle-filter score, Eq. 7
    ├─ committee_prediction_entropy              # disagreement signal, Eq. 9
    └─ inline near-best softmax (search          # Eq. 11–12
-      `elbo_softmax_temperature` /
+      `likelihood_softmax_temperature` /
       `near_best` in the agent)
 ```
 

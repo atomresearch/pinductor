@@ -169,7 +169,7 @@ def paper_overrides(condition: str, env: str) -> Dict[str, Any]:
         o["agent.planner.entropy_coeff"] = 1.0
         o["agent.use_ucb1_selection"] = True
         o["agent.ucb1_c"] = 1.0
-        o["agent.elbo_softmax_temperature"] = 0.1
+        o["agent.likelihood_softmax_temperature"] = 0.1
         return o
 
     if condition == "curtis_their":

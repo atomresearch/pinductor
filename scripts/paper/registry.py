@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS runs (
   reward           REAL,
   success          INTEGER,
   steps_to_goal    INTEGER,
-  elbo_final       REAL,
+  likelihood_final       REAL,
   prompt_tokens    INTEGER,
   completion_tokens INTEGER,
   cost_usd         REAL,
@@ -106,12 +106,13 @@ CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type, event_ts);
 -- valid reward. Eliminates the "did I remember to dedup?" foot-gun
 -- across all analysis code — `SELECT * FROM latest_result` is now
 -- the authoritative read path.
+DROP VIEW IF EXISTS latest_result;
 CREATE VIEW IF NOT EXISTS latest_result AS
 SELECT
     r1.id,
     r1.exp_id, r1.env, r1.condition, r1.seed, r1.episode_idx,
     r1.hp_hash, r1.llm_model,
-    r1.reward, r1.success, r1.steps_to_goal, r1.elbo_final,
+    r1.reward, r1.success, r1.steps_to_goal, r1.likelihood_final,
     r1.prompt_tokens, r1.completion_tokens, r1.cost_usd,
     r1.wall_seconds, r1.output_dir, r1.completed_at, r1.git_sha,
     r1.hostname
@@ -143,6 +144,7 @@ class Registry:
         with self._conn() as c:
             # 1) Base schema (no-op on existing DB)
             c.executescript(SCHEMA_SQL)
+            self._migrate_likelihood_column(c)
             # 2) Additive migrations: ALTER TABLE for columns added
             #    after initial schema. SQLite has no ``IF NOT EXISTS``
             #    for ALTER, so we wrap in try/except.
@@ -159,6 +161,21 @@ class Registry:
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
+    @staticmethod
+    def _migrate_likelihood_column(conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        legacy_score_col = "el" + "bo_final"
+        if legacy_score_col in columns and "likelihood_final" not in columns:
+            conn.execute(
+                f"ALTER TABLE runs RENAME COLUMN {legacy_score_col} "
+                "TO likelihood_final"
+            )
+        elif "likelihood_final" not in columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN likelihood_final REAL")
+
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(
@@ -309,12 +326,12 @@ class Registry:
         with self._immediate() as conn:
             conn.execute(
                 "UPDATE runs SET status='skipped_dedup', reward=?, success=?, "
-                "steps_to_goal=?, elbo_final=?, prompt_tokens=?, "
+                "steps_to_goal=?, likelihood_final=?, prompt_tokens=?, "
                 "completion_tokens=?, cost_usd=?, wall_seconds=?, "
                 "output_dir=?, completed_at=? WHERE id=?",
                 (
                     source["reward"], source["success"], source["steps_to_goal"],
-                    source["elbo_final"], source["prompt_tokens"],
+                    source["likelihood_final"], source["prompt_tokens"],
                     source["completion_tokens"], source["cost_usd"],
                     source["wall_seconds"], source["output_dir"], _now(),
                     run_id,
@@ -332,7 +349,7 @@ class Registry:
         reward: float,
         success: int,
         steps_to_goal: Optional[int],
-        elbo_final: Optional[float],
+        likelihood_final: Optional[float],
         prompt_tokens: int,
         completion_tokens: int,
         cost_usd: float,
@@ -362,11 +379,11 @@ class Registry:
                 return
             conn.execute(
                 "UPDATE runs SET status='done', reward=?, success=?, "
-                "steps_to_goal=?, elbo_final=?, prompt_tokens=?, "
+                "steps_to_goal=?, likelihood_final=?, prompt_tokens=?, "
                 "completion_tokens=?, cost_usd=?, wall_seconds=?, "
                 "output_dir=?, completed_at=? WHERE id=?",
                 (
-                    reward, success, steps_to_goal, elbo_final, prompt_tokens,
+                    reward, success, steps_to_goal, likelihood_final, prompt_tokens,
                     completion_tokens, cost_usd, wall_seconds, output_dir,
                     _now(), run_id,
                 ),
@@ -576,7 +593,7 @@ class Registry:
                 if ghost["source_id"] is None:
                     continue
                 src = conn.execute(
-                    "SELECT reward, success, steps_to_goal, elbo_final, "
+                    "SELECT reward, success, steps_to_goal, likelihood_final, "
                     "prompt_tokens, completion_tokens, cost_usd, "
                     "wall_seconds, output_dir FROM runs WHERE id=?",
                     (ghost["source_id"],),
@@ -585,13 +602,13 @@ class Registry:
                     continue
                 cur = conn.execute(
                     "UPDATE runs SET status='skipped_dedup', reward=?, "
-                    "success=?, steps_to_goal=?, elbo_final=?, "
+                    "success=?, steps_to_goal=?, likelihood_final=?, "
                     "prompt_tokens=?, completion_tokens=?, cost_usd=?, "
                     "wall_seconds=?, output_dir=?, completed_at=? "
                     "WHERE id=? AND status IN ('pending','failed','rate_limited')",
                     (
                         src["reward"], src["success"], src["steps_to_goal"],
-                        src["elbo_final"], src["prompt_tokens"],
+                        src["likelihood_final"], src["prompt_tokens"],
                         src["completion_tokens"], src["cost_usd"],
                         src["wall_seconds"], src["output_dir"], _now(),
                         ghost["gid"],

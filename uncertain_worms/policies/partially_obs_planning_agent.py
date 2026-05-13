@@ -31,14 +31,14 @@ Mapping to code
                                    Pinductor) or ``base_policy.requery``
                                    (per-component, POMDP Coder baseline)
 - Step 6 (Particle filter score)   :func:`particle_filtering.get_score_metrics
-                                   .ELBOEvaluator.evaluate_elbo` (Eq. 7-8)
+                                   .LikelihoodEvaluator.evaluate_likelihood` (Eq. 7-8)
 - Step 8 (QBC disagreement)        :func:`particle_filtering.model_disagreement
                                    .committee_prediction_entropy` (Eq. 9)
                                    + ``DisagreementDetector`` for per-context
                                    summaries fed back into the LLM prompt.
 - Step 10 (final selection)        Inline near-best softmax inside
                                    ``joint_update_models_rex`` (search for
-                                   ``elbo_softmax_temperature`` / ``near_best``).
+                                   ``likelihood_softmax_temperature`` / ``near_best``).
                                    Implements Eq. 11-12.
 
 Online deployment loop
@@ -55,7 +55,7 @@ Hyperparameters (paper Table 1 / App. D)
 - ``num_particles`` (K, default 10)     — belief size
 - ``num_model_attempts`` (M, default 5) — candidates per REx round
 - ``ucb1_c`` (c, default 1.0)           — UCB1 exploration constant
-- ``elbo_softmax_temperature`` (T)      — final selection temperature
+- ``likelihood_softmax_temperature`` (T)      — final selection temperature
 - ``num_input_examples`` (N_D)          — number of offline trajectories
 """
 from __future__ import annotations
@@ -74,7 +74,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 from pyvis.network import Network  # type:ignore
 
-from particle_filtering.get_score_metrics import ELBOEvaluator
+from particle_filtering.get_score_metrics import LikelihoodEvaluator
 from uncertain_worms.planners.base_planner import PartiallyObservablePlanner
 from uncertain_worms.policies.base_policy import (
     PROMPT_DIR,
@@ -87,12 +87,11 @@ from uncertain_worms.policies.base_policy import (
     transition_model_translator,
 )
 # Pure helpers live in llm_feedback to keep this module focused on
-# orchestration. We re-export under the historical names so any in-file
-# reference (and any external import) keeps working.
+# orchestration.
 from uncertain_worms.policies.llm_feedback import (
-    ELBO_FLOOR as _ELBO_FLOOR,
-    elbo_components_from_episode_metrics as _elbo_components_from_episode_metrics,
-    elbo_from_episode_metrics as _elbo_from_episode_metrics,
+    LIKELIHOOD_FLOOR as _LIKELIHOOD_FLOOR,
+    likelihood_components_from_episode_metrics as _likelihood_components_from_episode_metrics,
+    likelihood_from_episode_metrics as _likelihood_from_episode_metrics,
     jensen_shannon_divergence as jsd,
 )
 from uncertain_worms.policies.rex_helpers import (
@@ -300,7 +299,7 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         super().__init__(*args, **kwargs)
         self.empty_state = empty_state
         self.empty_observation = empty_observation
-        # Explicit storage so ``_make_elbo_evaluator`` can propagate the
+        # Explicit storage so ``_make_likelihood_evaluator`` can propagate the
         # value instead of hard-coding (the former ``num_particles=100``
         # / ``kernel_bandwidth=1.0`` hardcodes caused the "10 at plan,
         # 100 at score" divergence that polluted early runs). The QBC
@@ -880,7 +879,7 @@ class RexNode:
     transition_model, reward_model)`` triple evaluated on a held-out
     train / test split. Fields ``train_coverage`` and ``test_coverage``
     are fossils from the old single-model "coverage" scoring path.
-    They now hold ELBO aggregates (i.e.
+    They now hold likelihood aggregates (i.e.
     the mean clamped pf_score of the train / test replay buffers).
 
     The new-style names :attr:`train_score` / :attr:`test_score` are
@@ -1025,11 +1024,11 @@ class LLMPartiallyObsPlanningAgent(
 
     def _sync_evaluator_models(
         self,
-        elbo_evaluator: "ELBOEvaluator",
+        likelihood_evaluator: "LikelihoodEvaluator",
         active_joint_models: List[str],
     ) -> None:
         for model_name in active_joint_models:
-            setattr(elbo_evaluator, model_name, self._get_model(model_name))
+            setattr(likelihood_evaluator, model_name, self._get_model(model_name))
 
     def __init__(
         self,
@@ -1089,7 +1088,7 @@ class LLMPartiallyObsPlanningAgent(
         sanity_check_num_samples: int = 10,
         use_pareto_term_channel: bool = False,
         train_on_demos_only: bool = False,
-        elbo_softmax_temperature: float = 0.0,
+        likelihood_softmax_temperature: float = 0.0,
         **kwargs: Any,
     ) -> None:
         # Q2-3 fix: forward kwargs that are ALSO declared on the parent
@@ -1121,10 +1120,10 @@ class LLMPartiallyObsPlanningAgent(
         # F2 (R#2-A) — opt-in robust median aggregation across episodes.
         # Default "mean" preserves backward compatibility. Setting
         # "median" mitigates the contamination from a single collapsed
-        # episode (pf_score=-inf clamped to ELBO_FLOOR) that otherwise
+        # episode (pf_score=-inf clamped to LIKELIHOOD_FLOOR) that otherwise
         # pulls the aggregate down. Huber (1964) robust statistics
         # foundation. Affects both REx scoring (`_score_models`) and
-        # diagnostic `[ELBO]` line.
+        # diagnostic `[LIKELIHOOD]` line.
         if pf_aggregation not in ("mean", "median"):
             raise ValueError(
                 f"pf_aggregation must be 'mean' or 'median', got {pf_aggregation!r}"
@@ -1160,9 +1159,9 @@ class LLMPartiallyObsPlanningAgent(
         # data always added to train).
         self.train_on_demos_only = bool(train_on_demos_only)
 
-        # Softmax ELBO sampling of
+        # Softmax likelihood sampling of
         # `best_node` at the end of `joint_update_models_rex` instead
-        # of a hard argmax. When `elbo_softmax_temperature > 0`, the
+        # of a hard argmax. When `likelihood_softmax_temperature > 0`, the
         # final deployed candidate is drawn from
         # ``p_k ∝ exp(score_k / T)`` over all generated nodes, where
         # ``score_k = (train_coverage + test_coverage) / 2`` (the same
@@ -1172,11 +1171,11 @@ class LLMPartiallyObsPlanningAgent(
         # model; Boltzmann exploration (classical RL) restores a
         # chance to deploy the "second-best" candidate. Default 0.0 =
         # byte-identical with pre-F9 argmax behaviour.
-        self.elbo_softmax_temperature = float(elbo_softmax_temperature)
-        if self.elbo_softmax_temperature < 0.0:
+        self.likelihood_softmax_temperature = float(likelihood_softmax_temperature)
+        if self.likelihood_softmax_temperature < 0.0:
             raise ValueError(
-                f"elbo_softmax_temperature must be ≥ 0, got "
-                f"{self.elbo_softmax_temperature!r}"
+                f"likelihood_softmax_temperature must be ≥ 0, got "
+                f"{self.likelihood_softmax_temperature!r}"
             )
 
         self.model_translators = {
@@ -1215,7 +1214,7 @@ class LLMPartiallyObsPlanningAgent(
         self.improvement_eps = improvement_eps
         # I3: inverse-frequency event weighting in the score evaluator.
         # Default False preserves byte-identical output against the
-        # pre-I3 formula; flag threads through _make_elbo_evaluator()
+        # pre-I3 formula; flag threads through _make_likelihood_evaluator()
         # so both offline and online REx instantiations pick it up.
         self.event_weighted_scoring = event_weighted_scoring
         # Preliminary #8: explicit reward MSE term in pf_score.
@@ -1289,7 +1288,7 @@ class LLMPartiallyObsPlanningAgent(
         # update. When enabled, a candidate is accepted if its per-event
         # reward likelihood strictly improves AND neither obs nor trans
         # per-step NLL regress by more than ``pareto_delta`` nats, OR if
-        # the aggregate ``combined_elbo`` clears the old ``improvement_eps``
+        # the aggregate ``combined_likelihood`` clears the old ``improvement_eps``
         # path by ``pareto_eps_large`` nats. Default False keeps the
         # monotone comparator byte-identical. Targets the documented
         # "good reward code rejected sub-noise" failure mode: the 2%
@@ -1346,8 +1345,8 @@ class LLMPartiallyObsPlanningAgent(
         # Falls back to 0 when no seed was supplied.
         _strat_seed = self.llm_seed if self.llm_seed is not None else 0
         self._strat_rng = random.Random(_strat_seed)
-        self.elbo = float('-inf')
-        self.previous_elbo = float("-inf")
+        self.likelihood = float('-inf')
+        self.previous_likelihood = float("-inf")
         with open(os.path.join(PROMPT_DIR, "po_inserts.json")) as f:
             self.inserts = json.load(f)
         self.joint_model_inserts = self._resolve_joint_model_inserts(
@@ -1381,7 +1380,7 @@ class LLMPartiallyObsPlanningAgent(
             # under-penalise rare-but-informative fields (e.g.
             # ``carrying`` on Unlock changes on ~6% of transitions, so
             # a buggy transition_func that makes pickup a no-op is
-            # barely distinguishable from a correct one in ELBO).
+            # barely distinguishable from a correct one in likelihood).
             # Installing the adapter here — after buffer load and
             # before the first REx iteration — makes the subsequent
             # ``distance_soft`` calls use per-field weights auto-
@@ -2002,7 +2001,7 @@ class LLMPartiallyObsPlanningAgent(
                     if m.get("mean_ESS", 1) == 0 or math.isinf(m.get("pf_score", 0))
                 )
                 if "pf_score" in valid[0]:
-                    clamped_scores = [max(m["pf_score"], _ELBO_FLOOR) for m in valid]
+                    clamped_scores = [max(m["pf_score"], _LIKELIHOOD_FLOOR) for m in valid]
                     avg_score = float(np.mean(clamped_scores))
                     fit_text = (
                         "MODEL FIT\n"
@@ -2361,8 +2360,8 @@ class LLMPartiallyObsPlanningAgent(
     # Shared helpers for offline / online / REx update entry points      #
     # ------------------------------------------------------------------ #
 
-    def _make_elbo_evaluator(self) -> "ELBOEvaluator":
-        """Build an :class:`ELBOEvaluator` bound to the planner's current
+    def _make_likelihood_evaluator(self) -> "LikelihoodEvaluator":
+        """Build an :class:`LikelihoodEvaluator` bound to the planner's current
         transition / observation / reward / initial models.
 
         Every numeric parameter now propagates from the agent's own
@@ -2376,7 +2375,7 @@ class LLMPartiallyObsPlanningAgent(
         ``self.max_rejuvenation_attempts`` (plumbed through the
         constructor) so it too can be configured or at least logged.
         """
-        return ELBOEvaluator(
+        return LikelihoodEvaluator(
             transition_model=self.planner.transition_model,
             observation_model=self.planner.observation_model,
             reward_model=self.planner.reward_model,
@@ -2493,24 +2492,24 @@ class LLMPartiallyObsPlanningAgent(
 
         eps = 0.001
 
-        # Use planner.initial_model (same as joint_update) for consistency with the ELBO
+        # Use planner.initial_model (same as joint_update) for consistency with the likelihood
         # values shown in prompts. ground_truth_initial_model can cause -inf when mixed
         # with learned transition/observation on offline+online data.
-        elbo_evaluator = self._make_elbo_evaluator()
+        likelihood_evaluator = self._make_likelihood_evaluator()
 
-        _, _, _, _, _, error, episode_metrics = elbo_evaluator.evaluate_elbo(
+        _, _, _, _, _, error, episode_metrics = likelihood_evaluator.evaluate_likelihood(
             total_replay_buffer, output_particle_distance_metrics=True
         )
         if error is not None:
-            log.warning(f"Error evaluating ELBO: {error}")
+            log.warning(f"Error evaluating Likelihood: {error}")
             return
-        elbo = _elbo_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
-        log.info(f"ELBO: {elbo:.4f}")
+        likelihood = _likelihood_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
+        log.info(f"Likelihood: {likelihood:.4f}")
         # Scores are energy-based: closer to 0 is better, more negative is worse.
         # Only refine when fit on newly collected data gets worse.
-        if elbo >= self.previous_elbo - eps:
+        if likelihood >= self.previous_likelihood - eps:
             log.info(
-                f"ELBO on new data is not worse than previous ELBO, skipping update"
+                f"Likelihood on new data is not worse than previous likelihood, skipping update"
             )
             return
 
@@ -2539,19 +2538,19 @@ class LLMPartiallyObsPlanningAgent(
 
         self.reset()
 
-        elbo_evaluator = self._make_elbo_evaluator()
+        likelihood_evaluator = self._make_likelihood_evaluator()
 
-        _, _, _, _, _, error, episode_metrics = elbo_evaluator.evaluate_elbo(
+        _, _, _, _, _, error, episode_metrics = likelihood_evaluator.evaluate_likelihood(
             total_replay_buffer, output_particle_distance_metrics=True
         )
         if error is not None:
-            log.warning(f"Error evaluating ELBO : {error}")
+            log.warning(f"Error evaluating Likelihood : {error}")
             return
-        elbo = _elbo_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
-        self.previous_elbo = elbo
-        log.info(f"ELBO: {elbo:.4f}")
+        likelihood = _likelihood_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
+        self.previous_likelihood = likelihood
+        log.info(f"Likelihood: {likelihood:.4f}")
         self.writer.add_scalar(
-            "online_total/" + "joint", elbo, episode
+            "online_total/" + "joint", likelihood, episode
         )  # type:ignore
 
 
@@ -2610,32 +2609,32 @@ class LLMPartiallyObsPlanningAgent(
             )  # type:ignore
 
         self.reset()
-        elbo_evaluator = self._make_elbo_evaluator()
+        likelihood_evaluator = self._make_likelihood_evaluator()
 
-        _, _, _, _, _, error, episode_metrics = elbo_evaluator.evaluate_elbo(
+        _, _, _, _, _, error, episode_metrics = likelihood_evaluator.evaluate_likelihood(
             self.offline_replay_buffer,
             output_particle_distance_metrics=True,
         )
-        elbo = _elbo_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
+        likelihood = _likelihood_from_episode_metrics(episode_metrics, msc_weight=self.msc_weight, aggregation=getattr(self, "pf_aggregation", "mean"))
 
         if error is not None:
-            log.warning(f"Error evaluating ELBO for joint models: {error}")
+            log.warning(f"Error evaluating Likelihood for joint models: {error}")
             return
-        self.previous_elbo = elbo
-        log.info(f"ELBO: {elbo:.4f}")
+        self.previous_likelihood = likelihood
+        log.info(f"Likelihood: {likelihood:.4f}")
         for model_name in active_joint_models:
             self.writer.add_scalar(
-                "offline_total/" + model_name, elbo, 0
+                "offline_total/" + model_name, likelihood, 0
             )  # type:ignore
 
 
     # ------------------------------------------------------------------ #
-    # Model scoring: ELBO + optional Matrix-ELBO gradient feedback       #
+    # Model scoring: likelihood + optional matrix-likelihood gradient feedback #
     # ------------------------------------------------------------------ #
 
     def _score_models(
         self,
-        elbo_evaluator: "ELBOEvaluator",
+        likelihood_evaluator: "LikelihoodEvaluator",
         replay_buffer: ReplayBuffer,
         active_joint_models: List[str],
     ) -> Tuple[float, Any, Any, Any, Any, Any, Any, Any]:
@@ -2644,34 +2643,34 @@ class LLMPartiallyObsPlanningAgent(
         Returns (score, actions, observations, prev_obs, rewards,
                  terminated, episode_metrics, error).
 
-        The score is the FIVO/ELBO aggregate of per-episode particle
+        The score is the FIVO/likelihood aggregate of per-episode particle
         filter scores (optionally with an MSC term). The legacy "coverage"
         mode was removed — it depended on a never-defined
         ``get_state_distributions_tiger`` helper and always fell back to
-        ELBO via a silent ``except``, so every "coverage" experiment was
-        in fact an ELBO run in disguise.
+        likelihood via a silent ``except``, so every "coverage" experiment was
+        in fact a likelihood run in disguise.
         """
         (actions, observations, prev_obs,
          rewards, terminated, error,
-         episode_metrics) = elbo_evaluator.evaluate_elbo(
+         episode_metrics) = likelihood_evaluator.evaluate_likelihood(
             replay_buffer, output_particle_distance_metrics=True
         )
 
         # M6: expose raw and clamped aggregates side by side. The returned
         # `score` stays clamped (used by downstream selection) but the log
         # line makes the catastrophic-episode gap visible.
-        score, elbo_diag = _elbo_components_from_episode_metrics(
+        score, likelihood_diag = _likelihood_components_from_episode_metrics(
             episode_metrics,
             msc_weight=self.msc_weight,
             aggregation=getattr(self, "pf_aggregation", "mean"),
         )
-        if elbo_diag["n_valid"] > 0:
+        if likelihood_diag["n_valid"] > 0:
             log.info(
-                "[ELBO] clamped=%.4f raw=%.4f n_collapsed=%d/%d "
+                "[LIKELIHOOD] clamped=%.4f raw=%.4f n_collapsed=%d/%d "
                 "min_raw=%.4f max_raw=%.4f",
-                elbo_diag["clamped_mean"], elbo_diag["raw_mean"],
-                int(elbo_diag["n_collapsed"]), int(elbo_diag["n_valid"]),
-                elbo_diag["min_raw"], elbo_diag["max_raw"],
+                likelihood_diag["clamped_mean"], likelihood_diag["raw_mean"],
+                int(likelihood_diag["n_collapsed"]), int(likelihood_diag["n_valid"]),
+                likelihood_diag["min_raw"], likelihood_diag["max_raw"],
             )
 
         # Surface runtime errors from silent catches so that
@@ -2846,7 +2845,7 @@ class LLMPartiallyObsPlanningAgent(
         self,
         *,
         node: RexNode,
-        child_combined_elbo: float,
+        child_combined_likelihood: float,
         improvement_eps: float,
     ) -> None:
         """Apply one continuous Beta-Bernoulli update to ``node`` (M2).
@@ -2856,8 +2855,8 @@ class LLMPartiallyObsPlanningAgent(
 
             reward_weight = sigmoid(delta / (10 * improvement_eps))
 
-        with ``delta = child_combined_elbo - parent_combined_elbo``
-        where ``parent_combined_elbo`` is ``(train_coverage +
+        with ``delta = child_combined_likelihood - parent_combined_likelihood``
+        where ``parent_combined_likelihood`` is ``(train_coverage +
         test_coverage) / 2``. This gives:
 
         - ``reward_weight ≈ 0.5`` when ``delta == 0`` (no progress);
@@ -2870,8 +2869,8 @@ class LLMPartiallyObsPlanningAgent(
         recover once it finally starts scoring well.
 
         The sigmoid is evaluated via a numerically stable two-branch
-        form so that an ELBO-floored child (e.g. combined_elbo = -100)
-        against a healthy parent (combined_elbo ≈ -28) no longer
+        form so that a likelihood-floored child (e.g. combined_likelihood = -100)
+        against a healthy parent (combined_likelihood ≈ -28) no longer
         overflows ``math.exp`` — the pre-refactor inline block used
         ``1 / (1 + exp(-delta/scale))`` directly, which crashed on such
         inputs once the LLM produced a fully-collapsed candidate. The
@@ -2880,8 +2879,8 @@ class LLMPartiallyObsPlanningAgent(
         and converges to 0 or 1 on the degenerate inputs that used to
         raise ``OverflowError``.
         """
-        parent_combined_elbo = (node.train_coverage + node.test_coverage) / 2
-        delta = child_combined_elbo - parent_combined_elbo
+        parent_combined_likelihood = (node.train_coverage + node.test_coverage) / 2
+        delta = child_combined_likelihood - parent_combined_likelihood
         update_scale = max(10.0 * improvement_eps, 1e-9)
         x = float(delta) / update_scale
         if x >= 0.0:
@@ -3031,7 +3030,7 @@ class LLMPartiallyObsPlanningAgent(
         self,
         new_node: "RexNode",
         best_node: Optional["RexNode"],
-        combined_elbo: float,
+        combined_likelihood: float,
         best_ever_score: float,
     ) -> Tuple[Optional[bool], str]:
         """Pareto-style acceptance for the monotone bound update.
@@ -3044,7 +3043,7 @@ class LLMPartiallyObsPlanningAgent(
         selector stayed silent. The decision rule is:
 
             accept  iff  (Δ_rew > 0  AND  Δ_obs > −δ  AND  Δ_trans > −δ)
-                    OR   (combined_elbo − best_ever_score) > eps_large
+                    OR   (combined_likelihood − best_ever_score) > eps_large
 
         where δ = ``pareto_delta`` and eps_large = ``pareto_eps_large``.
         When a component delta cannot be computed (missing on either
@@ -3105,7 +3104,7 @@ class LLMPartiallyObsPlanningAgent(
             if new_term is not None and best_term is not None:
                 d_term = float(best_term - new_term)
                 pareto_crit = pareto_crit and (d_term > -delta)
-        fallback_crit = (combined_elbo - best_ever_score) > eps_large
+        fallback_crit = (combined_likelihood - best_ever_score) > eps_large
         accept = bool(pareto_crit or fallback_crit)
         bq_tag = f" Δ_pfsc={d_bq:+.3f}" if bq_on else ""
         term_tag = f" Δ_term={d_term:+.3f}" if term_on else ""
@@ -3383,16 +3382,16 @@ class LLMPartiallyObsPlanningAgent(
             f"Updating models using REx jointly for: {active_function_names}"
         )
 
-        elbo_evaluator = self._make_elbo_evaluator()
+        likelihood_evaluator = self._make_likelihood_evaluator()
 
-        # Evaluate initial models using the unified scorer (E1: ELBO or coverage)
-        (train_elbo, train_actions, train_observations, train_previous_observations,
+        # Evaluate initial models using the unified scorer (E1: likelihood or coverage)
+        (train_likelihood, train_actions, train_observations, train_previous_observations,
          train_rewards, train_terminated, train_episode_metrics, train_error
-        ) = self._score_models(elbo_evaluator, train_replay_buffer, active_joint_models)
+        ) = self._score_models(likelihood_evaluator, train_replay_buffer, active_joint_models)
 
-        (test_elbo, _, test_observations, _,
+        (test_likelihood, _, test_observations, _,
          _, _, test_episode_metrics, test_error
-        ) = self._score_models(elbo_evaluator, test_replay_buffer, active_joint_models)
+        ) = self._score_models(likelihood_evaluator, test_replay_buffer, active_joint_models)
 
         # These are from the initial (default) model, so they should be fine.
         assert train_error is None
@@ -3403,8 +3402,8 @@ class LLMPartiallyObsPlanningAgent(
         # Patience and improvement threshold are Hydra-configurable via
         # `convergence_patience` / `improvement_eps` on the agent; with
         # `None`, patience defaults to max(3, num_attempts // 4).
-        best_combined_elbo = (train_elbo + test_elbo) / 2
-        self.previous_elbo = best_combined_elbo
+        best_combined_likelihood = (train_likelihood + test_likelihood) / 2
+        self.previous_likelihood = best_combined_likelihood
         no_improvement_count = 0
         convergence_patience = (
             self.convergence_patience
@@ -3413,7 +3412,7 @@ class LLMPartiallyObsPlanningAgent(
         )
         improvement_eps = self.improvement_eps
 
-        # M8: Cache of identical LLM-generated code → (train_elbo, test_elbo).
+        # M8: Cache of identical LLM-generated code → (train_likelihood, test_likelihood).
         # Skips redundant PF evaluations when the LLM repeats a snippet
         # during the same REx run. Scoped to this call only (per-run cache).
         score_cache: Dict[str, Tuple[float, float]] = {}
@@ -3427,8 +3426,8 @@ class LLMPartiallyObsPlanningAgent(
 
         initial_node = RexNode(
             to_update=to_update,
-            train_coverage=train_elbo,
-            test_coverage=test_elbo,
+            train_coverage=train_likelihood,
+            test_coverage=test_likelihood,
             train_empirical_dist=train_observations,
             train_model_dist=None,
             test_empirical_dist=test_observations,
@@ -3452,7 +3451,7 @@ class LLMPartiallyObsPlanningAgent(
         # guaranteed to be at least as good as the initial model — score(t+1)
         # >= score(t) by construction, giving a non-decreasing sequence that
         # converges to a local optimum.
-        best_ever_score = best_combined_elbo
+        best_ever_score = best_combined_likelihood
         best_ever_node: Optional[RexNode] = initial_node
         monotone_trace: List[Tuple[int, float]] = [(-1, best_ever_score)]
         log.info(f"[MONOTONE] Initial bound: {best_ever_score:.4f}")
@@ -3612,7 +3611,7 @@ class LLMPartiallyObsPlanningAgent(
                 parent_node.messages = new_messages
 
                 # Rebind evaluator models to the latest generated code before scoring.
-                self._sync_evaluator_models(elbo_evaluator, active_joint_models)
+                self._sync_evaluator_models(likelihood_evaluator, active_joint_models)
 
                 # M8: short-circuit PF evaluation when the LLM repeats a snippet
                 # we already scored in this REx run. Keyed on the raw code string
@@ -3620,32 +3619,32 @@ class LLMPartiallyObsPlanningAgent(
                 cache_key = model_code if isinstance(model_code, str) else ""
                 cached = score_cache.get(cache_key) if cache_key else None
                 if cached is not None:
-                    (train_elbo, train_actions, train_observations,
+                    (train_likelihood, train_actions, train_observations,
                      train_previous_observations, train_rewards, train_terminated,
                      train_episode_metrics, train_error,
-                     test_elbo, test_observations, test_episode_metrics,
+                     test_likelihood, test_observations, test_episode_metrics,
                      test_error) = cached
                     cache_hits += 1
                     log.info(
                         f"[CACHE] hit #{cache_hits} — reusing score "
-                        f"train={train_elbo:.4f} test={test_elbo:.4f}"
+                        f"train={train_likelihood:.4f} test={test_likelihood:.4f}"
                     )
                 else:
-                    (train_elbo, train_actions, train_observations,
+                    (train_likelihood, train_actions, train_observations,
                      train_previous_observations, train_rewards, train_terminated,
                      train_episode_metrics, train_error
-                     ) = self._score_models(elbo_evaluator, train_replay_buffer, active_joint_models)
+                     ) = self._score_models(likelihood_evaluator, train_replay_buffer, active_joint_models)
 
-                    (test_elbo, _, test_observations, _,
+                    (test_likelihood, _, test_observations, _,
                      _, _, test_episode_metrics, test_error
-                     ) = self._score_models(elbo_evaluator, test_replay_buffer, active_joint_models)
+                     ) = self._score_models(likelihood_evaluator, test_replay_buffer, active_joint_models)
 
                     if cache_key and train_error is None and test_error is None:
                         score_cache[cache_key] = (
-                            train_elbo, train_actions, train_observations,
+                            train_likelihood, train_actions, train_observations,
                             train_previous_observations, train_rewards, train_terminated,
                             train_episode_metrics, train_error,
-                            test_elbo, test_observations, test_episode_metrics,
+                            test_likelihood, test_observations, test_episode_metrics,
                             test_error,
                         )
 
@@ -3668,7 +3667,7 @@ class LLMPartiallyObsPlanningAgent(
                 qbc_candidates=_qbc_candidates,
             )
 
-            combined_elbo = (train_elbo + test_elbo) / 2
+            combined_likelihood = (train_likelihood + test_likelihood) / 2
 
             # Event gate: reject candidates that reproduce 0% of critical
             # events (reward, terminated) on the TEST set. Uses the
@@ -3709,15 +3708,15 @@ class LLMPartiallyObsPlanningAgent(
             # soft-success formula, saturation behaviour and α/β cap.
             self._apply_continuous_beta_update(
                 node=parent_node,
-                child_combined_elbo=combined_elbo,
+                child_combined_likelihood=combined_likelihood,
                 improvement_eps=improvement_eps,
             )
 
             # Create a new RexNode for the generated code.
             new_node = RexNode(
                 to_update=to_update,
-                train_coverage=train_elbo,
-                test_coverage=test_elbo,
+                train_coverage=train_likelihood,
+                test_coverage=test_likelihood,
                 train_empirical_dist=train_observations,
                 train_model_dist=None,
                 test_empirical_dist=test_observations,
@@ -3750,7 +3749,7 @@ class LLMPartiallyObsPlanningAgent(
             pareto_decision, pareto_msg = self._pareto_accept(
                 new_node=new_node,
                 best_node=best_ever_node,
-                combined_elbo=combined_elbo,
+                combined_likelihood=combined_likelihood,
                 best_ever_score=best_ever_score,
             )
             if pareto_msg:
@@ -3761,9 +3760,9 @@ class LLMPartiallyObsPlanningAgent(
             elif pareto_decision is not None:
                 accept = pareto_decision
             else:
-                accept = combined_elbo > best_ever_score + improvement_eps
+                accept = combined_likelihood > best_ever_score + improvement_eps
             if accept:
-                best_ever_score = combined_elbo
+                best_ever_score = combined_likelihood
                 best_ever_node = new_node
                 monotone_trace.append((iter_num, best_ever_score))
                 log.info(
@@ -3773,18 +3772,18 @@ class LLMPartiallyObsPlanningAgent(
             else:
                 log.info(
                     f"[MONOTONE] = Kept best: {best_ever_score:.4f} "
-                    f"(candidate: {combined_elbo:.4f}, Δ={combined_elbo - best_ever_score:.4f})"
+                    f"(candidate: {combined_likelihood:.4f}, Δ={combined_likelihood - best_ever_score:.4f})"
                 )
 
             # Convergence test: break if no improvement in the last 3 attempts.
-            if combined_elbo > best_combined_elbo:
-                best_combined_elbo = combined_elbo
+            if combined_likelihood > best_combined_likelihood:
+                best_combined_likelihood = combined_likelihood
                 no_improvement_count = 0
             else:
                 no_improvement_count += 1
                 if no_improvement_count >= convergence_patience:
                     log.info(
-                        f"Model Update Step {self.rex_iter}: No improvement in combined likelihood for {convergence_patience} consecutive attempts (best: {best_combined_elbo:.4f}). Converged."
+                        f"Model Update Step {self.rex_iter}: No improvement in combined likelihood for {convergence_patience} consecutive attempts (best: {best_combined_likelihood:.4f}). Converged."
                     )
                     break
 
@@ -3808,7 +3807,7 @@ class LLMPartiallyObsPlanningAgent(
             generated_nodes, key=lambda node: (node.test_coverage, node.train_coverage)
         )
 
-        # Opt-in softmax sampling over ELBOs of generated nodes.
+        # Opt-in softmax sampling over likelihood scores of generated nodes.
         # Treats `(train_coverage+test_coverage)/2`
         # as logits. At T → 0 this converges to the argmax above;
         # at T > 0 we draw ~ Categorical(softmax(score / T)), giving
@@ -3824,7 +3823,7 @@ class LLMPartiallyObsPlanningAgent(
         # floor we keep MONOTONE's lower bound while allowing exploration
         # between candidates that are statistically indistinguishable
         # from the best.
-        softmax_T = float(getattr(self, "elbo_softmax_temperature", 0.0))
+        softmax_T = float(getattr(self, "likelihood_softmax_temperature", 0.0))
         if softmax_T > 0.0:
             candidates = [
                 n for n in generated_nodes if n.previous_code is not None

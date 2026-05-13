@@ -64,7 +64,7 @@ def test_no_scientific_hyperparams_in_runtime_overrides() -> None:
         "agent.max_attempts", "agent.num_particles",
         "agent.planner.entropy_coeff", "agent.planner.lambda_coeff",
         "agent.planner.max_expansions", "agent.use_ucb1_selection",
-        "agent.ucb1_c", "agent.elbo_softmax_temperature",
+        "agent.ucb1_c", "agent.likelihood_softmax_temperature",
         "agent.fully_obs", "env.fully_obs",
     )
     for cond in ("ours", "curtis_their"):

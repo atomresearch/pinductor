@@ -11,11 +11,11 @@ and environments, this package owns:
 
 | File | Role | Paper reference |
 | --- | --- | --- |
-| `get_score_metrics.py` | `ELBOEvaluator` — bootstrap particle filter + rejuvenation + distance-kernel pseudo-likelihood. The class's `evaluate(...)` method returns the per-trajectory and aggregate kernel score used by the agent. | §4.3 + Eq. 7 + App. A |
+| `get_score_metrics.py` | `LikelihoodEvaluator` — bootstrap particle filter + rejuvenation + distance-kernel pseudo-likelihood. The class's `evaluate_likelihood(...)` method returns the per-trajectory and aggregate kernel score used by the agent. | §4.3 + Eq. 7 + App. A |
 | `model_disagreement.py` | `DisagreementDetector` (per-context aggregation) + `committee_prediction_entropy` (global QBC signal, Eq. 9). | §4.4 + Eq. 9 |
 | `belief_quality_scorer.py` | Oracle diagnostic — compares particle beliefs against ground-truth states. **Not** used in the production scoring loop (would break the obs-only setting); kept for calibration scripts only. | App. E (validation) |
 
-## Scoring modes (`ELBOEvaluator.scoring_mode`)
+## Scoring modes (`LikelihoodEvaluator.scoring_mode`)
 
 Only two values are wired in this release:
 
