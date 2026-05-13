@@ -1,0 +1,15 @@
+Corners:
+
+"10x10 grid with boundary walls. Goal is placed in a random corner of the grid. Agent starts at a random interior position with random direction. No obstacles. Both agent start and goal corner VARY between episodes."
+
+Four Rooms: 
+
+"15x15 grid divided into 4 rooms by internal walls, each room connected by one doorway. Agent and goal are placed at random positions in different rooms. Room layout is fixed but agent start position, direction, and goal position VARY between episodes."
+
+Lava: 
+
+"10x10 grid with boundary walls. A vertical wall of lava spans most of one column with exactly one gap to pass through. Agent starts at (1,1). Goal is at the bottom-right corner. The lava column position and gap position VARY between episodes."
+
+Unlock:
+
+"Grid world with boundary walls and a locked door separating the map into two sections. A key is placed in the accessible section, and the goal is located behind the locked door. Agent starts in the initial section with random position and direction. The room layout is fixed, while agent start position, key position, and goal position VARY between episodes."

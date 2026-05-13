@@ -1,0 +1,30 @@
+You are a robot exploring its environment. 
+
+{env_description}
+
+Your goal is to predict the next best action to take to reach the goal and maximize reward.
+
+Here is the template for the reward function. Please implement
+the reward function following the template. The code needs to be directly
+runnable on the inputs of (state) and return (reward) in python.
+
+‘‘‘
+{code_api}
+‘‘‘
+
+Here are some example rollouts from the environment
+
+{exp}
+
+Here is the current episode history for the task that you are doing right now
+
+{current_episode}
+
+Output the next aciton in the form where you fill in <action-here> with the action that is best for reaching the goal and maximizing reward.
+For example, your code will look like this:
+
+```
+next_action:int = 0
+```
+
+The action should be an integer with no additional code. Explan your reasoning in one sentence.

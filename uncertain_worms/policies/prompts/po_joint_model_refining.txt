@@ -1,0 +1,66 @@
+You are a robot exploring its environment through partial observations.
+
+ENVIRONMENT
+-----------
+{env_description}
+
+GOAL
+----
+{goal_description}
+
+Your task is to improve {what_to_model} implemented in Python.
+
+OBSERVED DATA
+-------------
+Below are samples of actions and resulting observations from the real environment.
+The true state is hidden — you only see observations (the agent's partial view).
+Use these to verify your understanding of the world dynamics.
+
+{observations}
+
+YOUR CURRENT CODE
+-----------------
+```
+{code_api}
+
+{code}
+```
+
+EVALUATION RESULTS
+------------------
+Your code was evaluated against the observed data. Here are the results:
+
+{particle_metrics_section}
+
+INSTRUCTIONS
+------------
+1. First, analyze: for each reported error or disagreement above, explain
+   in plain English what you think went wrong and why.
+2. Then, fix: implement an improved version of the {model_names} functions.
+   Focus on the specific cases where the evaluation found errors.
+
+Rules:
+- You must implement the {model_names} functions.
+- Do not create new classes or import new modules.
+- Do not overfit to specific indices — use general rules.
+- Put the {model_names} functions in a python code block.
+
+Generalization principles
+-------------------------
+Your goal is a **world model**: a compact, general description of how the
+environment behaves, not a lookup table of the samples you have seen.
+
+1. **Rules over memorization.** Express conditions on semantic content,
+   not on the literal arrays present in the samples.
+2. **Cover the space, not the sample.** Enumerate every plausible case the
+   environment can produce and decide what should happen in each, even
+   when the sample does not exercise it.
+3. **Parsimony.** Prefer the shortest rule consistent with the data. Long
+   nested branches enumerating specific coordinates almost always overfit.
+4. **No episode or step references.** Conditions must depend only on the
+   arguments your function receives, not on which sample they came from.
+5. **One coherent hypothesis.** When several samples disagree, choose the
+   single most general rule consistent with all of them — do not stack
+   special cases for each one.
+6. **Keep what was already right.** When extending your previous code,
+   do not drop a case that already worked. Add the new case alongside.

@@ -1,0 +1,42 @@
+{
+    "initial_model": {
+        "what_to_model": "the distribution of initial states ",
+        "model_input": "empty_state (environment-specific placeholder)",
+        "model_output": "a sample initial state",
+        "model_name": "initial_func",
+        "samples_info": "You have no access to samples from the initial state distribution because the true state is hidden. Instead, use the environment specifications below to make an informed guess about the model. "
+    },
+    "observation_model": {
+        "what_to_model": "the distribution of observations conditioned on a state",
+        "model_input": "(state, action)",
+        "model_output": "a sample (observation)",
+        "model_name": "observation_func",
+        "samples_info": "Below are samples of Actions and resulting Observations from the environment distribution. These are only samples from a larger distribution that you should model. \nNote: The samples do NOT show the underlying State because it is hidden.\nUse the samples and the environment specifications below to make an informed guess about the model.\nImportant: The input state is the state after the action has already been performed. Your goal is only to implement the sensor logic: Construct the observation from the state and action."
+    },
+    "transition_model": {
+        "what_to_model": "the distribution of next states conditioned on actions and previous states",
+        "model_input": "(state, action)",
+        "model_output": "a sample (next_state)",
+        "model_name": "transition_func",
+        "samples_info": "Below are samples from the environment distribution. These samples are derived from state distributions computed from observations (without access to true hidden states). The state distributions represent our belief about which states are likely given the observations we received. These are only samples from a larger distribution that you should model."
+    },
+    "reward_model": {
+        "what_to_model": "the reward conditioned on state, action, next state transition",
+        "model_input": "(state, action, next_state)",
+        "model_output": "(reward, done)",
+        "model_name": "reward_func",
+        "samples_info": "Below are a few samples from the environment distribution. These are only samples from a larger distribution that you should model."
+    },
+    "joint_model_minigrid": {
+        "what_to_model": "the distribution of observations, transitions and rewards",
+        "model_names": "observation_func, transition_func and reward_func",
+        "samples_info": "You have no access to the true states as they stay hidden. \nBelow are samples of Actions and Observations from the environment for different episodes. Each Input (action) is followed by the Output (observation) received after taking that action. You should model the different models that explain the observed dynamics. \nNote: The samples do NOT show the underlying State because it is hidden.\n\nObservation format: Each observation is a grid that represents the agent's field of view (point of view). The agent is always at the same fixed position within this grid. The rest of the grid cells represent the environment as perceived by the agent at that particular step. The grid thus encodes what the agent sees in front of it at each step.\n\nUse the samples and the environment specifications below to make an informed guess about the different models."
+    },
+    "joint_model_tiger": {
+        "what_to_model": "the distribution of observations, transitions and rewards",
+        "model_names": "observation_func, transition_func and reward_func",
+        "samples_info": "You have no access to the true states as they stay hidden. \nBelow are samples of Actions and Observations from the environment for different episodes. Each Input (action) is followed by the Output (observation) received after taking that action. You should model the different models that explain the observed dynamics. \nNote: The samples do NOT show the underlying State because it is hidden.\n\nUse the samples and the environment specifications below to make an informed guess about the different models."
+    }
+
+    
+}

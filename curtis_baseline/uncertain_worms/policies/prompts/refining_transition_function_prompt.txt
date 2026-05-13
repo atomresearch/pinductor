@@ -1,0 +1,40 @@
+You are a robot exploring in an object-centric environment. Your goal is to model the logic of the world in python. 
+You have tried it before and came up with one partially correct solution. 
+They can model the logic for some experiences but failed for others. 
+You need to improve your code to model the logic of the world for all the experiences.
+The new code needs to be directly runnable on the (state, action) pair and return the next state in python as provided in the experiences.
+
+Here is the partially correct solution you came up with. 
+It can model the logic for some experiences but failed for others. 
+You need to improve your code to model the logic of the world for all the experiences. 
+The new code needs to be directly runnable on the (state, action) pair and return the next state in python as provided in the experiences.
+
+```
+{code_api}
+
+{code}
+```
+
+The given code cannot model the logic of the world for all the experiences.
+Here are some experiences that the code have successfully modeled.
+
+{correct_experience}
+
+Here is an example of experiences that the code failed to model.
+
+{incorrect_experience}
+
+For this failed experience, do you know what is different between the true transitions from the environment and the predictions from the code? 
+Do you know why the environment behaves in this way? 
+Do you know why the code behaves differently from the environment? 
+Which part of the code causes the problem? 
+How to fix it? 
+Please improve your code to model the logic of the world for all the experiences, accordingly. 
+Please implement the code following the template. 
+Feel free to implement any helper functions you need. 
+You can also implement the logic for difference actions in different helper functions. 
+However, you must implement the ‘ transition_func ‘ function as the main function to be called by the environment. 
+The code needs to be directly runnable on the (state, action) tuple and return the new state in python as provided in the experiences. 
+Do not output examples. 
+Do not define or change any classes.
+Do not define or use any functions other than the ‘ transition_func ‘ function.

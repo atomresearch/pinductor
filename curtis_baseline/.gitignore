@@ -1,0 +1,21 @@
+**/__pycache__/
+**/.DS_Store
+
+**.egg-info
+outputs
+
+.env
+main.log
+.vscode
+build/
+
+.mypy_cache/
+*.DS_Store
+
+lib
+checkpoints
+
+# Copied from a repo that stored these datasets in Git LFS. The files in this
+# import are only LFS pointer stubs, so staging them here breaks pushes.
+uncertain_worms/environments/**/trajectory_data/*.pkl
+uncertain_worms/environments/**/noisy_trajectory_data/*.pkl

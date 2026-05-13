@@ -1,0 +1,26 @@
+{
+    "initial_model": {
+        "what_to_model": "the distribution of initial states ",
+        "model_input": "an empty state with the walls of the grid pre-filled",
+        "model_output": "a sample initial state",
+        "model_name": "initial_func"
+    },
+    "observation_model": {
+        "what_to_model": "the distribution of observations conditioned on a state",
+        "model_input": "(state)",
+        "model_output": "a sample (observation)",
+        "model_name": "observation_func"
+    },
+    "transition_model": {
+        "what_to_model": "the distribution of next states conditioned on actions and previous states",
+        "model_input": "(state, action)",
+        "model_output": "a sample (next_state)",
+        "model_name": "transition_func"
+    },
+    "reward_model": {
+        "what_to_model": "the reward conditioned on state, action, next state transition",
+        "model_input": "(state, action, next_state)",
+        "model_output": "(reward, done)",
+        "model_name": "reward_func"
+    }
+}

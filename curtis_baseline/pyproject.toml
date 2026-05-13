@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uncertain_worms_baseline"
+version = "0.1.0"
+description = "POMDP Coder baseline, minigrid-only build."
+
+# Minimal deps for the minigrid POMDP experiments. The original release also
+# pulled bosdyn / pybullet / open3d / rerun for the Spot robot environment;
+# those are not required to reproduce the paper experiments.
+dependencies = [
+    "numpy==1.26.4",
+    "gymnasium==0.28.1",
+    "minigrid==2.3.1",
+    "matplotlib>=3.9.2",
+    "imageio>=2.35.1",
+    "python-dotenv==1.0.1",
+    "openai==1.53.0",
+    "hydra-core==1.3.2",
+    "hydra-colorlog==1.2.0",
+    "pygame==2.6.1",
+    "torch==2.2.2",
+    "tensorboard==2.18.0",
+    "pyro-ppl==1.9.1",
+    "graphviz==0.20.3",
+    "requests==2.32.3",
+    "pytest>=7.0.0",
+    "pyvis==0.3.2",
+    "wandb>=0.16.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["uncertain_worms"]
+
+[tool.setuptools]
+include-package-data = true

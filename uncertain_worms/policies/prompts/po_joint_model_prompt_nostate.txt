@@ -1,0 +1,80 @@
+You are a robot exploring its environment through partial observations.
+
+ENVIRONMENT
+-----------
+{env_description}
+
+GOAL
+----
+{goal_description}
+
+Your task is to model {what_to_model} in Python.
+You need to implement code that captures the dynamics observed in the data below.
+
+IMPORTANT CONSTRAINTS
+---------------------
+- You have NO access to the true state — it is hidden.
+- You only observe the agent's partial field of view after each action.
+- Your models must explain how observations change when actions are taken.
+- Observations are partial views of a persistent world. Successive observations are snapshots of the same underlying state evolving under your transition model, not independent frames. Keep in mind that the agent itself occupies space in its view, which can momentarily mask part of what is otherwise stable.
+
+{samples_info}
+
+OBSERVED DATA
+-------------
+{observations}
+
+CODE TEMPLATE
+-------------
+Implement the {model_names} functions following the template below.
+
+```
+{code_api}
+
+{initial_code_template}
+
+{observation_code_template}
+
+{transition_code_template}
+
+{reward_code_template}
+```
+
+INSTRUCTIONS
+------------
+1. First, explain in plain English what you believe the dynamics are:
+   - Which hidden variables are randomized at the start of each episode?
+   - How does the agent's view change when it moves or turns?
+   - What objects exist and how does the agent interact with them?
+   - What actions succeed or fail, and why?
+2. Then, implement the {model_names} functions.
+
+Rules:
+- You must implement the {model_names} functions.
+- Create helper functions only INSIDE the scope of the {model_names} functions.
+- Do not create new classes or import new modules.
+- Do not overfit to specific sample indices — use general rules.
+- Put the {model_names} functions in a python code block.
+
+Generalization principles
+-------------------------
+Your goal is to build a **world model**: a compact, general description of
+how the environment behaves. The samples below are a few draws from an
+infinite distribution of layouts; the model you write must work on draws
+you have never seen.
+
+1. **Rules over memorization.** Express conditions on the semantic content
+   of states, not on the literal arrays present in the samples. A rule that
+   hard-codes a specific layout fragment will break on the next draw.
+2. **Cover the space, not the sample.** Enumerate every plausible case the
+   environment can produce and decide what should happen in each, even
+   when the sample does not exercise it. Missing a rare case is usually
+   worse than being slightly inexact on a common one.
+3. **Parsimony.** Prefer the shortest rule consistent with the data. Long
+   nested branches enumerating specific coordinates almost always overfit.
+4. **No episode or step references.** "Episode N ended at step T" is not a
+   rule you can use at deployment. Conditions must depend only on the
+   arguments your function receives.
+5. **One coherent hypothesis.** When several samples disagree, choose the
+   single most general rule consistent with all of them — do not stack
+   special cases for each one.

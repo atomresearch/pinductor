@@ -1,0 +1,38 @@
+# Python
+**/__pycache__/
+*.pyc
+**.egg-info
+.mypy_cache/
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+build/
+
+# Editor / OS
+.vscode/
+*.swp
+*.DS_Store
+.ipynb_checkpoints/
+
+# Secrets — keep .env local, ship only .env.example
+.env
+.env.bak*
+!.env.example
+
+# Run outputs (Hydra, WandB, registry, episode GIFs)
+outputs/
+multirun/
+wandb/
+*.log
+*.gif
+nohup.out
+
+# Claude / agent state (never tracked)
+.claude/
+CLAUDE.md
+
+# Pyvis / pyro caches
+lib/
+checkpoints/

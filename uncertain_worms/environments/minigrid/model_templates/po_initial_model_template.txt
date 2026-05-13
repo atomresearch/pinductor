@@ -1,0 +1,8 @@
+def initial_func(empty_state:MinigridState):
+    """
+    Input:
+        empty_state (MinigridState): An empty state with only the walls filled into the grid
+    Returns:
+        state (MinigridState): the initial state of the environment
+    """
+    raise NotImplementedError

@@ -1,0 +1,37 @@
+You are a robot exploring its environment. 
+
+Environment Description: {env_description}
+Goal Description: {goal_description}
+
+Your goal is to model the {what_to_model}. 
+You need to implement the python code to model the world, as seen in the provided experiences. 
+Please follow the template to implement the code. 
+The code needs to be directly runnable {model_input} and return {model_output}. 
+
+
+Below are a few samples from the environment distribution. These are only samples from a larger distribution that your should model.
+
+{exp}
+
+Here is the template for the {model_name} function. Please implement
+the reward function following the template. The code needs to be directly
+runnable.
+
+‘‘‘
+{code_api}
+
+{code_template}
+‘‘‘
+
+Explain what you believe is the {what_to_model} in english.
+Additionally, please implement code to model the logic of the world. Please implement the 
+code following the template. Only output the definition for ‘ {model_name} ‘. 
+You must implement the ‘ {model_name} ‘ function.
+Create any helper function inside the scope of ‘ {model_name} ‘. 
+Do not create any helper function outside the scope of ‘ {model_name} ‘.
+Do not output examples usage. 
+Do not create any new classes.
+Do not rewrite existing classes. 
+Do not import any new modules from anywhere.
+Do not overfit to the specific samples.
+Put the ‘ {model_name} ‘ function in a python code block.

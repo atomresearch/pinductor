@@ -1,0 +1,29 @@
+You are a robot exploring its environment. 
+
+{env_description}
+
+Your goal is to model the logic of the world in python. 
+You need to implement the python code to model the logic of the world, as seen in the provided experiences. 
+Please follow the template to implement the code. 
+The code needs to be directly runnable on the (state, action, next_state) tuple and return the (reward, done) tuple in python as provided in the experiences.
+
+You need to implement python code to model the logic of the world for mission "get to the goal" as provided in the experiences:
+
+{exp}
+
+Here is the template for the reward function. Please implement
+the reward function following the template. The code needs to be directly
+runnable on the inputs of (state) and return (reward) in python.
+
+‘‘‘
+{code_api}
+
+{code_template}
+‘‘‘
+
+Please implement code to model the logic of the world. Please implement the code following the template. 
+Only output the definition for ` reward_func `.
+You must implement the ‘ reward_func ‘ function as the main function to be called by the environment. 
+The code needs to be directly runnable on the inputs as (state) and return (reward) in python. 
+Do not output examples usage. Do not create any new classes. 
+Let’s think step by step.

@@ -1,0 +1,28 @@
+You are a robot exploring its environment. 
+
+{env_description}
+
+Your goal is to model the logic of the world in python. You need to implement the python code to model the logic of the world. 
+Please follow the template to implement the code. 
+The code needs to be directly runnable on (state, action) and return (new_state) in python as provided by the experiences.
+
+You need to implement python code to model the logic of the world for mission "get to the goal" as provided by the experiences:
+
+{exp}
+
+Here is the template for the transition function. 
+Please implement the transition function following the template. 
+The code needs to be directly runnable on the inputs of (state, action) and return (new_state) in python.
+
+‘‘‘
+{code_api}
+
+{code_template}
+‘‘‘
+
+Please implement code to model the logic of the world. Please implement the code following the template. 
+Only output the definition for ` transition_func `.
+You must implement the ‘ transition_func ‘ function as the main function to be called by the environment. 
+The code needs to be directly runnable on the inputs as (state, action) and return (new_state) in python.
+Do not output examples usage. Do not create any new classes. 
+Let’s think step by step.
