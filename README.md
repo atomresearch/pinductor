@@ -501,4 +501,16 @@ first to skip LLM costs.
 
 Released under the **MIT License** (see `LICENSE`).
 
-A citation block will be added here once the paper is publicly available.
+If you use this codebase, please cite:
+
+```bibtex
+@misc{six2026learningpomdpworldmodels,
+      title={Learning POMDP World Models from Observations with Language-Model Priors}, 
+      author={Valentin Six and Frederik Panse and Mathis Fajeau and Lancelot Da Costa and Mridul Sharma and Alfonso Amayuelas and Tim Z. Xiao and David Hyland and Philipp Hennig and Bernhard Schölkopf},
+      year={2026},
+      eprint={2605.13740},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2605.13740}, 
+}
+```
