@@ -1,0 +1,41 @@
+# condition=direct_llm_po env=minesweeper_easy
+# Direct LLM: the model is asked for the next action, with no induced model, no
+# particle filter and no planner. It sees only its own partial observation, the
+# same demonstrations every other method reads, and the environment's API file.
+#
+# This is the ablation that separates the pipeline from the language model. It
+# is the partially observed half of the pair; its counterpart is
+# `direct_llm_fo/minesweeper_easy.yaml`.
+#
+# The protocol matches the other conditions on this environment.
+
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 14
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+env_name: &env_name "MineSweeperEasy"
+actions: &actions [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+
+agent:
+  _target_: uncertain_worms.policies.direct_llm_po_agent.DirectLLMPartiallyObsPolicy
+  env_code_path: environments/popgym
+  dataset_path: "environments/popgym/trajectory_data/MineSweeperEasy_random_N50.pkl"
+  actions: *actions
+  fully_obs: false

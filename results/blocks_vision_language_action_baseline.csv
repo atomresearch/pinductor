@@ -1,0 +1,11 @@
+env,method,metric,value
+Blocks,Pinductor,return,0.163
+Blocks,Pinductor,solved_pct,60
+Blocks,DreamerV3 (demonstration-seeded),return,0.165
+Blocks,DreamerV3 (demonstration-seeded),solved_pct,75
+Blocks,OpenVLA-7B,return,0.000
+Blocks,OpenVLA-7B,solved_pct,0
+Blocks,DreamerV3 (online),return,0.000
+Blocks,DreamerV3 (online),solved_pct,0
+Blocks,PPO-GRU,return,0.000
+Blocks,PPO-GRU,solved_pct,0

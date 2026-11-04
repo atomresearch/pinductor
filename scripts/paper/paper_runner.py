@@ -1,4 +1,25 @@
-"""Paper experiment driver — sequential atom launcher with SQLite dedup.
+"""Command-line driver for the paper's experiments.
+
+Pipeline, in order:
+
+  1. ``experiments.build_atoms`` enumerates the episodes an experiment
+     needs, one atom each;
+  2. :func:`group_atoms` merges the atoms that a single subprocess can
+     produce — same environment, condition, seed, resolved overrides and
+     LLM — since one run evaluates several episodes in a row;
+  3. :func:`launch_group` records the group in the registry, skips it if
+     the episodes already exist, otherwise runs one Hydra subprocess and
+     writes one registry row per episode.
+
+Everything durable lives in the registry (``outputs/paper_runs``), so an
+interrupted campaign is resumed by re-running the same command: atoms
+already marked done are skipped, and failed or interrupted ones are
+retried. Nothing is deleted, so results survive a crash of the driver.
+
+Each group also leaves a self-contained directory on disk holding the
+exact command, the resolved overrides, the logs and a ``result.json``.
+That is the second line of defence: the numbers can be rebuilt from those
+files if the registry is lost.
 
 Subcommands
 -----------
@@ -10,29 +31,6 @@ Subcommands
                           one experiment.
 * ``resume [<exp>]``      relaunch only ``pending`` / ``failed`` /
                           ``rate_limited`` atoms.
-
-Per-atom flow
--------------
-1. ``runner_backend.spec_for(env, condition)`` resolves the subprocess
-   working directory (repo root for ``ours*`` / ``curtis_baseline/`` for
-   ``curtis_*``, ``random``, ``tabular``) and the absolute Hydra
-   ``--config-path``.
-2. ``hyperparams.resolve_overrides`` produces a deterministic list of
-   Hydra overrides (seed, dataset path for E2 offline, LLM model for E4,
-   …) and ``hyperparams.hp_hash`` derives a SHA256-keyed dedup hash from
-   them.
-3. The registry is queried for matching ``(exp_id, env, condition, seed,
-   episode_idx, hp_hash)`` tuples; matching ``done`` rows are short-
-   circuited as ``skipped_dedup``.
-4. A subprocess ``python main.py --config-path … --config-name <env>
-   <overrides>`` is spawned. Its stdout/stderr is streamed to per-atom
-   log files under ``outputs/paper_runs/runs/<atom_dir>/``.
-5. On completion, ``log_parser`` extracts per-episode rewards and per-call
-   token counts, ``cost.estimate_cost_usd`` converts tokens to USD, and
-   the registry rows are updated.
-
-The runner is idempotent: re-running with the same hp_hash never reruns
-``done`` atoms; ``resume`` only fires on the non-terminal statuses.
 """
 from __future__ import annotations
 
@@ -51,7 +49,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-# Local imports
+# The sibling modules are imported by bare name, so this directory has to
+# be on sys.path when the file is executed as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cost import estimate_cost_usd
@@ -72,6 +71,7 @@ COST_PATH = RUNS_DIR / "cost_report.tsv"
 
 
 def _git_sha(cwd: Path) -> str:
+    """Commit the run was launched from, or "unknown" outside a checkout."""
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=cwd,
@@ -82,7 +82,7 @@ def _git_sha(cwd: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Grouping : (env, cond, seed, hp_hash) → subprocess unique
+# Grouping: the atoms one subprocess can produce
 # ---------------------------------------------------------------------------
 @dataclass
 class Group:
@@ -92,17 +92,20 @@ class Group:
     hp_hash: str
     llm_model: Optional[str]
     overrides: Dict[str, object]
-    atoms: List[Atom]  # tous les épisodes de ce seed
+    atoms: List[Atom]  # the episodes of this seed, possibly across exp_ids
 
 
 def _yaml_content_hash(env: str, condition: str) -> str:
-    """Stable SHA256 of the YAML paper config for ``(condition, env)``.
+    """Stable hash of the generated config for ``(condition, env)``.
 
-    Inclus dans ``hp_hash`` pour invalider le cache dedup quand le YAML
-    change SÉMANTIQUEMENT — pas quand on touche aux commentaires ou
-    au formatage. La normalisation via ``yaml.safe_load`` + redump trié
-    empêche les rotations de hp_hash spurieuses causées par de simples
-    changements de format.
+    Folded into ``hp_hash`` so that editing a config invalidates the
+    deduplication cache: an episode run under an older config is no longer
+    treated as a valid substitute for the current one.
+
+    The YAML is parsed and re-dumped with sorted keys before hashing, so
+    that only semantic changes count. Hashing raw bytes would rotate the
+    hash on a comment, a reordering or trailing whitespace, and every
+    already-computed episode would silently be re-run under a new hash.
     """
     from runner_backend import PAPER_CONFIGS_DIR
     yaml_path = PAPER_CONFIGS_DIR / condition / f"{env}.yaml"
@@ -119,24 +122,24 @@ def _yaml_content_hash(env: str, condition: str) -> str:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
     except Exception:
-        # Fallback: raw byte hash (legacy behaviour). Tagged so we can
-        # tell at a glance which rows came from the legacy path.
+        # Unparseable YAML, or PyYAML unavailable: fall back to hashing
+        # raw bytes. Tagged with a prefix so registry rows produced by
+        # this path are recognisable.
         return "L_" + hashlib.sha256(yaml_path.read_bytes()).hexdigest()[:10]
 
 
 def group_atoms(atoms: Sequence[Atom]) -> List[Group]:
-    """Groupe les atomes par (env, cond, seed, hp_hash, llm_model).
+    """Group atoms by (env, condition, seed, hp_hash, llm_model).
 
-    Assume que tous les atomes d'un même seed partagent le même hp_hash
-    (construit une fois). Le hp_hash inclut maintenant le hash du YAML
-    paper pour que toute modification du YAML (pas juste des overrides
-    runtime) invalide le cache dedup.
+    Atoms that fall in the same bucket are produced by one subprocess, and
+    may come from different experiments: an episode computed for E1 also
+    satisfies an identically configured E2 atom.
 
-    ``llm_model`` est ajouté dans la clé de groupement pour empêcher la
-    collision E4 qwen3-14b vs claude-opus-4.7
-    (le ``hp_hash`` ne contient pas le LLM, donc 2 atoms avec différents
-    LLMs auraient été mergés dans le même group, et le ``llm_model`` du
-    Group n'aurait été que celui du premier atom vu).
+    ``llm_model`` is part of the key even though it is not part of
+    ``hp_hash`` — it is passed by environment variable rather than as an
+    override, so it leaves no trace in the hash. Without it, two atoms
+    differing only by their LLM would merge, and the group would run
+    whichever model the first atom happened to name.
     """
     buckets: Dict[Tuple[str, str, int, str, Optional[str]], Group] = {}
     for atom in atoms:
@@ -145,7 +148,7 @@ def group_atoms(atoms: Sequence[Atom]) -> List[Group]:
             llm_model=atom.llm_model or DEFAULT_LLM,
             extra=atom.extra,
         )
-        # Combine runtime overrides hash + YAML content hash
+        # Run identity = runtime overrides + frozen config contents.
         yaml_hash = _yaml_content_hash(atom.env, atom.condition)
         hh_overrides = hp_hash(overrides)
         hh = hashlib.sha256(
@@ -167,19 +170,23 @@ def group_atoms(atoms: Sequence[Atom]) -> List[Group]:
 
 
 # ---------------------------------------------------------------------------
-# Launch un group
+# Running one group
 # ---------------------------------------------------------------------------
 def launch_group(
     group: Group, *, registry: Registry, dry_run: bool, verbose: bool,
 ) -> Dict[str, int]:
-    """Lance le subprocess pour un group et écrit les lignes dans le registre.
+    """Run one group's subprocess and record its episodes in the registry.
 
-    Retourne un compteur ``{status: n}`` sur les atomes du group.
+    Returns a ``{status: count}`` tally over the group's atoms, which the
+    caller accumulates into the campaign summary.
+
+    The function is safe to call again on a group that partly succeeded:
+    already-completed episodes are kept, the rest are retried.
     """
     counts: Dict[str, int] = defaultdict(int)
-    # 1) Upsert les N lignes pending (1 par atome ; plusieurs exp_ids peuvent
-    # partager un group si leurs overrides produisent le même hp_hash — dans
-    # ce cas chaque exp_id a sa propre ligne registry).
+    # 1) One pending row per atom. Atoms from different experiments share
+    # the subprocess but keep separate rows, so each experiment can be
+    # queried on its own.
     run_ids: Dict[Tuple[str, int], int] = {}
     for atom in group.atoms:
         rid = registry.upsert_pending(
@@ -194,14 +201,10 @@ def launch_group(
         )
         run_ids[(atom.exp_id, atom.episode_idx)] = rid
 
-    # 1.5) Skip uniquement si TOUS les atomes du group sont déjà `done`.
-    # Auparavant on skippait dès qu'AU MOINS un atome était done (anti-
-    # écrasement des row done par mark_failure). Mais depuis que
-    # `Registry.mark_failure` refuse explicitement d'écraser un row done
-    # avec reward (registry.py:mark_failure guard), on peut retry les
-    # groupes partiels en sécurité — le subprocess peut crasher, les
-    # done valides sont préservés, et les failed/pending du group sont
-    # retentés.
+    # 1.5) Skip only when every atom of the group is already done. A
+    # partially completed group is re-run: since ``Registry.mark_failure``
+    # refuses to demote a done row that holds a reward, a second crash
+    # cannot destroy the episodes that already succeeded.
     n_done_existing = 0
     with registry._conn() as _conn:
         for atom in group.atoms:
@@ -212,24 +215,26 @@ def launch_group(
             if row is not None and row["status"] == "done":
                 n_done_existing += 1
     if n_done_existing == len(group.atoms):
-        # Tous done : rien à faire.
         if verbose:
             _log(
                 f"[all_done] {group.env}/{group.condition}/s{group.seed}: "
-                f"{n_done_existing}/{len(group.atoms)} déjà done — skip"
+                f"{n_done_existing}/{len(group.atoms)} already done - skipping"
             )
         counts["skipped_partial_done"] = len(group.atoms)
         return counts
 
-    # 2) Dédup : si TOUS les épisodes du group existent `done` ailleurs →
-    # skip le subprocess, on marque skipped_dedup.
+    # 2) Cross-experiment dedup. The subprocess is skipped only if every
+    # episode of the group already exists elsewhere: a partial match still
+    # requires the run, since one subprocess produces all of them at once.
     all_dedup = True
     dedup_sources: Dict[Tuple[str, int], object] = {}
     for atom in group.atoms:
         src = registry.find_dedup_source(
             env=group.env, condition=group.condition, seed=group.seed,
             episode_idx=atom.episode_idx, hp_hash=group.hp_hash,
-            # Pass llm_model to prevent cross-LLM dedup collisions.
+            # Passed because the LLM is absent from hp_hash: without it,
+            # an episode run with one model would satisfy an atom that
+            # asked for another.
             llm_model=group.llm_model,
         )
         if src is None:
@@ -246,13 +251,13 @@ def launch_group(
                  f"→ {len(group.atoms)} ep skipped")
         return counts
 
-    # 3) Claim les lignes → running
+    # 3) Claim the rows so a concurrent worker cannot take the same group.
     for atom in group.atoms:
         registry.try_claim(run_ids[(atom.exp_id, atom.episode_idx)],
                            hostname=socket.gethostname(),
                            git_sha=_git_sha(REPO_ROOT))
 
-    # 4) Préparer commande Hydra
+    # 4) Build the Hydra command.
     spec = spec_for(group.env, group.condition)
     atom_slug = (
         f"{group.atoms[0].exp_id}__{group.env}__{group.condition}"
@@ -263,16 +268,17 @@ def launch_group(
 
     overrides_with_seed = dict(group.overrides)
     overrides_with_seed["seed"] = group.seed
-    # NB : si le group a forcé un num_episodes (smoke, mini), on le respecte.
-    # Sinon on garantit EPISODES_PER_SEED du protocole paper.
+    # An experiment that set its own episode count keeps it; otherwise the
+    # protocol default is pinned here rather than left to the YAML, so the
+    # number of episodes matches the number of rows the group expects.
     if "num_episodes" not in overrides_with_seed:
         overrides_with_seed["num_episodes"] = EPISODES_PER_SEED
-    # Hydra run dir : on redirige dans atom_out_dir pour garder les logs.
+    # Redirect Hydra's output next to the group's own artefacts, instead
+    # of its default dated directory under the working directory.
     hydra_overrides = as_hydra_args(overrides_with_seed) + [
         f"hydra.run.dir={atom_out_dir.as_posix()}",
     ]
 
-    # Le config-path est déjà absolu (pointant vers scripts/paper/configs/<cond>)
     cmd: List[str] = [
         sys.executable, str(spec.main_py),
         "--config-path", spec.config_path.as_posix(),
@@ -285,7 +291,8 @@ def launch_group(
             counts["pending"] += 1
         return counts
 
-    # 5) Écriture metadata + launch
+    # 5) Write the metadata before launching, so an aborted run still
+    # leaves the exact command and overrides on disk.
     metadata = {
         "exp_id": group.atoms[0].exp_id,
         "env": group.env,
@@ -307,17 +314,22 @@ def launch_group(
     stderr_path = atom_out_dir / "stderr.log"
     t0 = time.time()
     returncode = 0
-    # Injecter le modèle LLM via var d'env (utils.py lit PAPER_LLM_MODEL si
-    # présent ; sinon fallback sur son default). Voir doc dans hyperparams.py.
     subproc_env = {
         **os.environ,
         "PYTHONUNBUFFERED": "1",
-        "HYDRA_FULL_ERROR": "1",  # stack trace complète dans stderr.log
+        "HYDRA_FULL_ERROR": "1",  # full traceback in stderr.log
     }
-    # Propager explicitement OPEN_ROUTER_KEY depuis l'environnement parent
-    # rend le subprocess indépendant du placement exact du fichier .env.
+    # Forward the API key explicitly rather than relying on dotenv. Each
+    # codebase loads a .env relative to its own directory, and the two run
+    # from different working directories, so a key file placed at the
+    # repository root is invisible to the baseline. The failure is
+    # misleading when it happens: the key reads as None, the request goes
+    # out unauthenticated, and the error surfaces as a rate-limit message.
     if "OPEN_ROUTER_KEY" in os.environ:
         subproc_env["OPEN_ROUTER_KEY"] = os.environ["OPEN_ROUTER_KEY"]
+    # The LLM travels as an environment variable, not a Hydra override;
+    # see hyperparams.py. Left unset for conditions that use no LLM, which
+    # then keep their own default.
     if group.llm_model:
         subproc_env["PAPER_LLM_MODEL"] = group.llm_model
     # Heartbeat thread — keeps ``last_heartbeat_at`` fresh on every
@@ -351,7 +363,7 @@ def launch_group(
             proc = subprocess.run(
                 cmd, cwd=str(spec.cwd), stdout=so, stderr=se,
                 env=subproc_env,
-                timeout=3600 * 6,  # safety: 6h max par seed
+                timeout=3600 * 6,  # generous: some atoms legitimately run for hours
             )
         returncode = proc.returncode
     except subprocess.TimeoutExpired:
@@ -365,7 +377,9 @@ def launch_group(
         hb_thread.join(timeout=2.0)
     wall = time.time() - t0
 
-    # 6) Parser le log produit — Hydra crée outputs/paper_runs/runs/<slug>/main.log aussi
+    # 6) Read the metrics back out of the logs. All candidates are
+    # concatenated because the log file Hydra writes depends on the
+    # logging configuration of the codebase that ran.
     log_candidates = [stdout_path, atom_out_dir / "main.log", atom_out_dir / "output.log"]
     log_text = ""
     for lc in log_candidates:
@@ -373,7 +387,8 @@ def launch_group(
             log_text += lc.read_text(errors="replace")
     parsed = parse_log(log_text)
 
-    # 7) Écrire result.json (niveau 1 de résilience)
+    # 7) Persist the parsed metrics next to the logs. Several analysis
+    # scripts fall back to these files when a registry row is missing.
     result = {
         "returncode": returncode,
         "wall_seconds": wall,
@@ -387,7 +402,9 @@ def launch_group(
     }
     (atom_out_dir / "result.json").write_text(json.dumps(result, indent=2))
 
-    # 8) Update registry — 1 ligne par épisode
+    # 8) One registry row per episode. Tokens and cost are reported per
+    # run, so they are divided evenly across the episodes of the group;
+    # the per-episode split is an average, not a measurement.
     cost_per_ep = 0.0
     tok_p_per_ep = 0
     tok_c_per_ep = 0
@@ -418,21 +435,28 @@ def launch_group(
             )
             counts["done"] += 1
         else:
-            # L'épisode n'a pas été produit. On distingue 3 cas:
-            # 1) ``rate_limited`` — OpenRouter rate limit (prioritaire au retry)
-            # 2) ``interrupted`` — SIGTERM/SIGKILL externe (returncode -9/-15)
-            #    typiquement nous-mêmes (pkill, timeout subprocess.run).
-            #    Pas un vrai crash : les autres atomes du group peuvent
-            #    avoir terminé legitimement (mark_done). Distinct de
-            #    `failed` pour qu'on puisse mesurer le taux de bug
-            #    réel du LLM-coded model vs le bruit infrastructure.
-            # 3) ``failed`` — vrai crash subprocess (assertion, exception,
-            #    return code positif non-zero).
+            # The episode was never produced. The three statuses are kept
+            # apart because they mean different things when reading the
+            # results:
+            #   rate_limited — the provider refused the request; retrying
+            #     later is expected to work.
+            #   interrupted  — the process received SIGTERM or SIGKILL,
+            #     usually from the operator or from the timeout above.
+            #     Infrastructure noise, not a defect of the run.
+            #   failed       — the subprocess genuinely crashed.
+            # Collapsing them would make the failure rate of the generated
+            # models unmeasurable, since it would also count every process
+            # that was killed for unrelated reasons.
+            # Match what the two packages actually print. Both log the HTTP
+            # status before reading the body, and raise a named error once
+            # every key is out of credit; the earlier list looked for provider
+            # strings that appear in no log this repository produces.
             rate_sig = any(tok in log_text for tok in (
-                "Rate limit exceeded", "429 Too Many Requests",
-                "\"code\": 429", "rate-limit", "insufficient_quota",
+                "Response status code: 429",
+                "Response status code: 402",
+                "OpenRouterOutOfCreditsError",
             ))
-            if returncode == 42 or rate_sig:
+            if rate_sig:
                 status = "rate_limited"
             elif returncode in (-9, -15):
                 status = "interrupted"
@@ -459,6 +483,7 @@ def _log(*args: object) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 def cmd_run(args: argparse.Namespace) -> int:
+    """Plan an experiment and run it, sequentially or across workers."""
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     ATOM_DIR.mkdir(parents=True, exist_ok=True)
     registry = Registry(DB_PATH)
@@ -469,7 +494,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     atoms = build_atoms(args.exp, envs=envs)
 
-    # Filtres optionnels
+    # Narrowing filters, applied to the atom list rather than to the
+    # experiment definition, so a subset run keeps identical exp_ids and
+    # hashes and its results merge with the full campaign.
     if args.conditions:
         conds = set(c.strip() for c in args.conditions.split(","))
         atoms = [a for a in atoms if a.condition in conds]
@@ -501,7 +528,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         return False
 
     if workers == 1:
-        # Sequential (v1) — comportement historique
         for i, g in enumerate(groups, 1):
             _log(f"[{i}/{len(groups)}] launching {g.env}/{g.condition}/s{g.seed}")
             counts = launch_group(g, registry=registry, dry_run=False, verbose=True)
@@ -511,8 +537,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             if _check_stop():
                 break
     else:
-        # Parallel (v2) — ProcessPoolExecutor. SQLite WAL + BEGIN IMMEDIATE
-        # côté registry garantissent l'absence de double-claim inter-workers.
+        # Parallel path. Workers are processes, not threads, because each
+        # group is itself a subprocess launch; the registry's WAL mode and
+        # BEGIN IMMEDIATE transactions are what keep two workers from
+        # claiming the same group.
         from concurrent.futures import ProcessPoolExecutor, as_completed
         _log(f"[parallel] workers={workers}")
         submitted = 0
@@ -536,24 +564,25 @@ def cmd_run(args: argparse.Namespace) -> int:
                 _log(f"[{done}/{submitted}] {g.env}/{g.condition}/s{g.seed} "
                      f"{dict(counts)} | cum {dict(totals)} | {elapsed:.0f}s")
                 if _check_stop():
-                    # Sort du loop, les futures pending vont finir naturellement
-                    # quand on sort du `with` (ou sont cancel si pas démarré)
+                    # Leaving the loop; the pool's context manager waits
+                    # for groups already started and drops the rest.
                     break
     _log(f"[done] {dict(totals)}")
     return 0
 
 
 def _worker_launch(group: "Group") -> Dict[str, int]:
-    """Worker-process entrypoint pour ``ProcessPoolExecutor``.
+    """Worker-process entry point for ``ProcessPoolExecutor``.
 
-    Chaque worker ouvre sa propre connexion SQLite (WAL mode) — supporte
-    pleinement les accès concurrents.
+    A ``Registry`` is built here rather than inherited: SQLite connections
+    do not survive a fork, so each worker opens its own.
     """
     registry = Registry(DB_PATH)
     return launch_group(group, registry=registry, dry_run=False, verbose=False)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    """Print how many registry rows sit in each status."""
     registry = Registry(DB_PATH)
     counts = registry.status_counts(args.exp if args.exp else None)
     total = sum(counts.values())
@@ -562,13 +591,18 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    # Le resume est implicite : upsert_pending est idempotent, les lignes
-    # failed/rate_limited sont relancées dès qu'on ré-exécute run_cmd sur la
-    # même exp_id. On se contente d'appeler cmd_run.
+    """Resume a campaign.
+
+    Identical to ``run``: resuming is a property of the registry, not a
+    separate code path. ``upsert_pending`` is idempotent, done rows are
+    skipped, and failed, rate-limited or interrupted ones are picked up
+    again. The subcommand exists to make that intent explicit.
+    """
     return cmd_run(args)
 
 
 def _parse_int_range(spec: str) -> set[int]:
+    """Parse a seed selection such as "0,2,5-7" into a set of integers."""
     out: set[int] = set()
     for chunk in spec.split(","):
         chunk = chunk.strip()
@@ -584,7 +618,7 @@ def main() -> int:
     p = argparse.ArgumentParser(prog="paper_runner")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pr = sub.add_parser("run", help="Lancer une expérience")
+    pr = sub.add_parser("run", help="Run an experiment")
     pr.add_argument("exp", help="E1 | E2_offline | E2_online | E2b | E4 | all")
     pr.add_argument("--envs", default=None)
     pr.add_argument("--conditions", default=None)
@@ -592,7 +626,7 @@ def main() -> int:
     pr.add_argument("--dry-run", action="store_true")
     pr.add_argument("--max-hours", type=float, default=None)
     pr.add_argument("--workers", type=int, default=1,
-                    help="Nombre de subprocess parallèles (default 1 = sequential)")
+                    help="Number of parallel subprocesses (default 1 = sequential)")
     pr.set_defaults(func=cmd_run)
 
     ps = sub.add_parser("status", help="Compter les runs par status")

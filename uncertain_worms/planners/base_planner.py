@@ -31,6 +31,8 @@ class FullyObservablePlanner(ABC, Generic[StateType, ActType]):
         self.transition_model = transition_model
         self.reward_model = reward_model
         self.heuristic = heuristic
+        if hasattr(heuristic, "bind_planner"):
+            heuristic.bind_planner(self)
 
     @abstractmethod
     def plan_next_action(
@@ -57,6 +59,8 @@ class PartiallyObservablePlanner(ABC, Generic[StateType, ActType, ObsType, Belie
         self.observation_model = observation_model
         self.initial_model = initial_model
         self.heuristic = heuristic
+        if hasattr(heuristic, "bind_planner"):
+            heuristic.bind_planner(self)
 
     @abstractmethod
     def plan_next_action(

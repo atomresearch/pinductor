@@ -1,0 +1,72 @@
+# condition=tabular env=minesweeper_easy
+# Same counting estimator on the third suite. Its demonstrations come from a
+# random policy rather than an expert, so the tables it builds are what pure
+# exploration buys.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 14
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+- 10
+- 11
+- 12
+- 13
+- 14
+- 15
+env_name: MineSweeperEasy
+extras:
+  environment: minesweeper_easy
+  approach: tabular
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+agent:
+  _target_: uncertain_worms.policies.tabular_learners.Tabular_TROI_PartiallyObsPlanningAgent
+  fully_obs: false
+  actions: *id001
+  max_attempts: 5000
+  num_particles: 80
+  dataset_path: environments/popgym/trajectory_data/MineSweeperEasy_random_N50.pkl
+  empty_state:
+    _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_state_gen
+  empty_observation:
+    _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_observation_gen
+  planner:
+    _target_: uncertain_worms.planners.PO_DAStar.PO_DAStar
+    actions: *id001
+    max_expansions: 30
+    lambda_coeff: 0.0
+    entropy_coeff: 0.0
+    action_cost: 0.01
+    num_rollouts: 1
+    empty_observation:
+      _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_observation_gen
+    initial_model:
+      _target_: uncertain_worms.structs.empty_initial_model_gen
+    transition_model:
+      _target_: uncertain_worms.structs.empty_transition_model_gen
+    reward_model:
+      _target_: uncertain_worms.structs.empty_reward_model_gen
+    observation_model:
+      _target_: uncertain_worms.structs.empty_observation_model_gen

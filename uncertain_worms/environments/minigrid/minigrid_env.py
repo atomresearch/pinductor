@@ -1,3 +1,37 @@
+"""MiniGrid navigation domains: states, observations, models, rendering.
+
+This module adapts the MiniGrid gridworlds to the interfaces in
+:mod:`uncertain_worms.structs`, and contains four things.
+
+**The representations.** :class:`MinigridState` is the full world — grid,
+agent pose, carried object — and is what the environment and the logs
+manipulate. :class:`MinigridObservation` is what an agent is allowed to
+perceive: a small field of view in front of it, the direction it faces
+and what it holds. Nothing else. The gap between the two is the problem
+this repository studies, so the boundary is enforced by the observation
+class itself rather than by convention.
+
+**The reference models.** The ``minigrid_hardcoded_*_model_gen``
+functions are hand-written, correct implementations of the four POMDP
+components for this domain. They serve as the ground truth a generated
+model is compared against, and as the models used when a method is run
+with its dynamics given rather than learned.
+
+**The environment.** :class:`MinigridEnvironment` wraps a gym MiniGrid
+instance and returns both the observation and the true state; the state
+goes to the logs and the replay buffer, never to a partially observable
+agent.
+
+**Rendering.** The remaining helpers reconstruct a map from a sequence of
+partial views and turn it into a GIF. They exist for inspection only and
+run outside the evaluation path.
+
+Several code paths here are optimised versions of an obvious
+implementation, kept because they sit in the inner loop of the particle
+filter, which calls them millions of times per run. Each carries the
+plain formulation it must stay identical to.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -45,6 +79,13 @@ from uncertain_worms.utils import get_log_dir
 
 
 class AgentPositionWrapper(ViewSizeWrapper):
+    """Adds the agent's absolute position to the gym observation dict.
+
+    This is how the environment recovers the true state for logging and
+    for the replay buffer; the value is stripped before anything reaches
+    an agent (see :func:`build_obs`).
+    """
+
     def __init__(self, env: Env):
         super().__init__(env)
 
@@ -53,6 +94,13 @@ class AgentPositionWrapper(ViewSizeWrapper):
 
 
 class GridWrapper(AgentPositionWrapper):
+    """Adds the complete grid to the gym observation dict.
+
+    Same purpose as the position above: :func:`build_state` needs the
+    whole world to reconstruct a :class:`MinigridState`, which only the
+    evaluation loop is given.
+    """
+
     def __init__(self, env: Env, width: int, height: int):
         self.width, self.height = width, height
         super().__init__(env)
@@ -79,40 +127,42 @@ DIR_TO_VEC = [
     np.array((0, -1)),
 ]
 
+# Occlusion switch, applied both to the gym environment and to the field
+# of view this module computes. With it on, a cell hidden behind a wall is
+# still reported, so partial observability comes from the limited extent
+# of the view rather than from line of sight.
 SEE_THROUGH_WALLS = True
 
-# I_OBS_EXTEND: opt-in weights for the extra observation fields
-# (agent_dir, reward, terminated). Read at module load from env vars so
-# the feature can be toggled per-run without touching Hydra configs.
-# All defaults are 0.0 → distance_soft is byte-identical with the
-# pre-extension formula (image-only). Enable with e.g.
-#   OBS_DIR_WEIGHT=1.0 OBS_REWARD_WEIGHT=1.0 OBS_TERMINATED_WEIGHT=10.0
-# in the failure_repro / bench launch environment.
+# Weights of the non-image fields when two observations are compared (see
+# `MinigridObservation.distance_soft`). They are read from the
+# environment at import time, so a run can be re-scored under different
+# weights without touching a configuration file. The reward and
+# terminated weights below are left over from a version in which those
+# were observation fields; nothing reads them today.
 OBS_DIR_WEIGHT = float(os.environ.get("OBS_DIR_WEIGHT", "1.0"))
 OBS_REWARD_WEIGHT = float(os.environ.get("OBS_REWARD_WEIGHT", "0.0"))
 OBS_TERMINATED_WEIGHT = float(os.environ.get("OBS_TERMINATED_WEIGHT", "0.0"))
 
-# OBS_DIST_MODE: ``"arbitrary"`` (default, legacy) keeps the old raw
-# penalty semantics — DIR / TERM mismatches contribute raw ``weight``
-# and REWARD contributes ``weight * (Δr)^2`` in arbitrary units. This
-# mixes nats (the image-distance base term) with non-nats arbitraries.
+# Units in which a field mismatch is charged.
 #
-# ``"nats"`` turns each extra into a proper negative log-likelihood so
-# the full distance_soft is in nats end-to-end:
-#   - DIR  (Bernoulli match): mismatch ⇒ -log(eps_dir) nats, match ⇒ 0
-#   - REW  (Gaussian, sigma = OBS_REWARD_SIGMA):
-#              NLL = (Δr)^2 / (2 sigma^2)   (constant dropped — scale-invariant)
-#   - TERM (Bernoulli match): mismatch ⇒ -log(eps_term) nats, match ⇒ 0
-# ``OBS_*_WEIGHT`` then acts as a dimensionless multiplier on the nats.
+# ``"arbitrary"`` (the default) charges the raw weight, which mixes units:
+# the image term of the distance is a log-likelihood in nats, the field
+# penalties are not, and the two are added together.
+#
+# ``"nats"`` charges ``-log(eps)`` instead, that is the negative log
+# probability of observing a mismatched field under an error rate of
+# ``eps``, which puts the whole distance in nats and makes the weights
+# dimensionless multipliers.
 OBS_DIST_MODE = os.environ.get("OBS_DIST_MODE", "arbitrary").lower()
 OBS_DIR_EPS = float(os.environ.get("OBS_DIR_EPS", "0.01"))
 OBS_TERM_EPS = float(os.environ.get("OBS_TERM_EPS", "0.01"))
 OBS_REWARD_SIGMA = float(os.environ.get("OBS_REWARD_SIGMA", "0.5"))
 
-# Adaptive field weights are an optional module (absent from the stable
-# repo). Resolve once at import-time so distance_soft does not pay a
-# `find_spec` + `posix.stat` lookup on every call. This path is hot during
-# particle-filter evaluation.
+# Optional per-field weighting, not shipped here: without the module the
+# comparison falls back to the flat weights above. The import is resolved
+# once at import time rather than inside `distance_soft`, because that
+# function runs millions of times per evaluation and a repeated module
+# lookup there was measured to cost several percent of a run.
 try:
     from particle_filtering.field_weights import (
         get_active_adapter as _get_active_adapter,
@@ -123,11 +173,11 @@ except ImportError:
     _HAS_FIELD_WEIGHTS = False
 
 
-# Numba JIT batch distance — opt-in. When numba is available, the PF
-# scorer can call ``distance_soft_batch_image`` to compute K particle
-# distances in a single C-compiled call (~12.5x faster than the K
-# sequential Python calls on a 10×9 input). Profiled gain on a 5.7M
-# distance_soft / 1500s smoke = ~7s.
+# Compiled versions of the two inner-loop routines: the field-of-view
+# computation and the batched image distance. They are defined only when
+# numba is installed; both have a pure-Python equivalent below that must
+# produce identical results, and the module works either way. Numba is
+# therefore a speed dependency, never a correctness one.
 try:
     import numba as _numba_mod  # type: ignore
 
@@ -141,10 +191,14 @@ try:
         wall: np.int8,
         agent_value: np.int8,
     ) -> NDArray[np.int8]:
-        """Compute FOV in pure int8 — bit-exact equivalent of the
-        Python pad+slice+rot90+agent path. ~6x faster on 3x3 (500ns vs
-        3000ns) because the JIT eliminates numpy's per-op dispatch
-        cost. Saves ~30s on a 12M-call PF eval."""
+        """Field of view in front of the agent, in compiled int8 code.
+
+        Must stay bit-identical to the plain implementation in
+        :meth:`MinigridState.get_field_of_view`, which it replaces when
+        numba is available: cells outside the grid read as wall, the view
+        is rotated so that the agent always looks "up", and the agent
+        marker is written at the fixed bottom-centre slot.
+        """
         W = grid.shape[0]
         H = grid.shape[1]
         # Compute top-left of overlap window in grid coords
@@ -177,9 +231,9 @@ try:
             for y in range(gy1 - gy0):
                 fov[px0 + x, py0 + y] = grid[gx0 + x, gy0 + y]
 
-        # Rotation : k = -(agent_dir+1) mod 4 — same math as P7 slicing
-        # but materialised as a fresh contiguous array (numba doesn't
-        # accept stride-tricks views for re-assignment).
+        # Same rotation as the plain path, k = -(agent_dir+1) mod 4, but
+        # written into a fresh contiguous array: numba will not let a
+        # strided view be reassigned afterwards.
         n_rot = (-(agent_dir + 1)) % 4
         if n_rot != 0:
             rotated = np.empty((view_size, view_size), dtype=np.int8)
@@ -302,6 +356,18 @@ def distance_soft_batch_image(
 
 
 class ObjectTypes(IntEnum):
+    """Cell values used in state grids and observation images.
+
+    This encoding is local to the repository, not MiniGrid's own: doors
+    are split by their state so that a single integer per cell describes
+    the world completely, which is what lets a grid be a plain int8 array
+    and a state be hashable. :func:`minigrid_to_local` and
+    :func:`local_to_minigrid` convert to and from MiniGrid objects.
+
+    ``agent`` marks the agent's own cell in a field of view. It sits at a
+    fixed slot and is excluded from observation comparisons.
+    """
+
     unseen = 0
     empty = 1
     wall = 2
@@ -317,6 +383,8 @@ class ObjectTypes(IntEnum):
 
 
 class Direction(IntEnum):
+    """Agent headings, in the order :data:`DIR_TO_VEC` indexes."""
+
     facing_right = 0
     facing_down = 1
     facing_left = 2
@@ -324,6 +392,12 @@ class Direction(IntEnum):
 
 
 class Actions(IntEnum):
+    """Action codes, in MiniGrid's own order.
+
+    The integers are passed straight through to the gym environment, so
+    the order here has to match MiniGrid's and cannot be rearranged.
+    """
+
     left = 0  # Turn left
     right = 1  # Turn right
     forward = 2  # Move forward
@@ -347,8 +421,14 @@ IDX_COLOR_MAP = {
 }
 
 
-# Needed for parsing the state/observation
 def minigrid_to_local(obj: world_object.WorldObj) -> int:
+    """Map a MiniGrid object to its :class:`ObjectTypes` code.
+
+    An empty cell is ``None`` in MiniGrid and becomes ``empty`` here.
+    Doors map to three different codes depending on whether they are
+    open, closed or locked. Unknown object types raise rather than being
+    silently encoded as something else.
+    """
     if obj is None:
         return ObjectTypes.empty
     elif obj.type == "goal":
@@ -373,8 +453,14 @@ def minigrid_to_local(obj: world_object.WorldObj) -> int:
         raise TypeError(f"Unknown object {obj.type}")
 
 
-# Needed for rendering
 def local_to_minigrid(lobj: int) -> world_object.WorldObj:
+    """Inverse of :func:`minigrid_to_local`, used to render a grid.
+
+    Colours come from :data:`IDX_COLOR_MAP`: the local encoding drops
+    colour, so it has to be reintroduced from the object type. Codes this
+    function does not handle, the agent marker among them, come back as
+    ``None``.
+    """
     if lobj == ObjectTypes.empty or lobj == ObjectTypes.unseen:
         return world_object.WorldObj.decode(
             type_idx=OBJECT_TO_IDX["empty"], color_idx=0, state=0
@@ -457,10 +543,12 @@ class MinigridObservation(Observation):
     carrying: Optional[int] = None
 
     def copy(self) -> "MinigridObservation":
-        # Mirror of MinigridState.copy: ndarray.copy on the image (2.1x
-        # faster than np.copy), direct assignment on scalars. Bypasses
-        # both copy.deepcopy traversal AND np.array re-wrapping
-        # overhead that np.copy forwards to.
+        """Copy the image and share nothing else worth copying.
+
+        Written out rather than delegating to ``copy.deepcopy``, which
+        would walk the whole object for no benefit: the other two fields
+        are immutable scalars.
+        """
         return MinigridObservation(
             image=self.image.copy(),
             agent_dir=self.agent_dir,
@@ -472,11 +560,12 @@ class MinigridObservation(Observation):
 
     @staticmethod
     def decode(obj: "MinigridObservation") -> "MinigridObservation":
-        # Fast path: if image is already int8 ndarray we can skip the
-        # ``np.array(arr, dtype=int8)`` re-wrap (~540ns) and use the
-        # native ``ndarray.copy()`` (~330ns) — 1.6x faster, ~2.5s
-        # saved on a typical 12M-call PF eval. Slow path keeps full
-        # type-coercion semantics for the rare case of dict obs etc.
+        """Rebuild an observation, copying its image.
+
+        The image is coerced to int8 unless it already is, which is the
+        common case; the fields are read defensively so that an object
+        that merely looks like an observation can be decoded too.
+        """
         img = obj.image
         if isinstance(img, np.ndarray) and img.dtype == np.int8:
             new_img = img.copy()
@@ -489,10 +578,10 @@ class MinigridObservation(Observation):
         )
 
     def __eq__(self, other: object) -> bool:
-        # tobytes() == is ~12x faster than np.array_equal on small int8
-        # grids (172ns vs 2081ns) — bypasses numpy's broadcast/dtype
-        # checks. Invariant: same shape ⇔ same byte length ⇔ same dtype
-        # (we already gate on isinstance so the dtype assumption holds).
+        # Images are compared through their bytes rather than with
+        # np.array_equal: same result, since shape and dtype are already
+        # known to agree, and an order of magnitude cheaper on arrays this
+        # small. Observations are compared constantly by the filter.
         if not isinstance(other, MinigridObservation):
             return False
         if not isinstance(self.image, np.ndarray) or not isinstance(other.image, np.ndarray):
@@ -501,10 +590,9 @@ class MinigridObservation(Observation):
             return False
         if self.image.tobytes() != other.image.tobytes():
             return False
-        # Direct attribute access instead of ``getattr(self, X, default)``:
-        # agent_dir and carrying are
-        # @dataclass fields with default values, always present on
-        # any MinigridObservation instance.
+        # Direct attribute access: both are dataclass fields with
+        # defaults, so they exist on every instance and no fallback is
+        # needed.
         return (
             self.agent_dir == other.agent_dir
             and self.carrying == other.carrying
@@ -528,29 +616,27 @@ class MinigridObservation(Observation):
         )
 
     def distance_soft(self, other: "Observation") -> float:
-        # Image distance from the base implementation. The non-image
-        # perceptual channels (``agent_dir``, ``carrying``) add a small
-        # Bernoulli NLL on mismatch — direction is gated on the
-        # ``OBS_DIR_WEIGHT`` env var, carrying is always counted (it
-        # is a legitimate proprioceptive signal). ``reward`` and
-        # ``terminated`` are NOT compared here: they are scored via
-        # ``reward_func`` and surface in the FIVO reward decomposition.
-        #
-        # If a :class:`FieldWeightAdapter` is installed as the process
-        # singleton, its per-field weights override the flat env-var
-        # weights: image gets ``weight_of('image')``-scaled base,
-        # agent_dir and carrying get their own per-field weights.
-        # The adapter is opt-in and default-off, so without wiring from
-        # the agent this branch is byte-identical to the legacy path.
-        # Adapter resolved once at import-time (cf. _get_active_adapter
-        # at the top of this module). On a 5.7M-call profile the inline
-        # try/import cost ~80s (6%); now it's a pointer-deref + None check.
+        """How badly this observation disagrees with ``other``.
+
+        This is what weights particles: an imagined observation far from
+        the real one makes its particle unlikely. The image contributes
+        the base distance defined by
+        :meth:`uncertain_worms.structs.Observation.distance_soft`; a
+        mismatched direction or carried object adds a fixed penalty on
+        top, in the units selected by :data:`OBS_DIST_MODE`. Direction is
+        only charged when :data:`OBS_DIR_WEIGHT` is positive; a mismatched
+        carried object always is.
+
+        When the optional weighting module is installed, its per-field
+        weights replace the flat ones and also scale the image term.
+        Without it the two branches agree.
+        """
         adapter = _get_active_adapter() if _HAS_FIELD_WEIGHTS else None
         if not isinstance(other, MinigridObservation):
             return Observation.distance_soft(self, other)
-        # Bytes-based base distance — 3.7x faster than np.count_nonzero on
-        # the 3x3 int8 FOV (0.84µs vs 3.14µs). Bit-equal to the parent
-        # implementation; only the inner counting loop changes.
+        # Same formula as the base implementation, counted over raw bytes
+        # rather than with numpy: identical result, and appreciably
+        # cheaper on views this small at the volume the filter calls it.
         a_b = self.image.tobytes()
         b_b = other.image.tobytes()
         if len(a_b) != len(b_b) or self.image.shape != other.image.shape:
@@ -586,7 +672,7 @@ class MinigridObservation(Observation):
                 extra += w_carry * (dir_nll_mismatch if nats else 1.0)
             return scaled_base + extra
 
-        # Legacy path — byte-identical when the adapter is None.
+        # Flat weights, used when no weighting module is installed.
         extra = 0.0
         if OBS_DIR_WEIGHT > 0.0:
             if self.agent_dir != other.agent_dir:
@@ -597,19 +683,29 @@ class MinigridObservation(Observation):
 
 @dataclass
 class MinigridState(State):
+    """The complete world: grid, agent pose, and carried object.
+
+    The grid is indexed ``[x, y]`` with ``y`` growing downwards, matching
+    MiniGrid's own convention, and holds :class:`ObjectTypes` codes. A
+    state is fully described by these four fields, so equality and hash
+    cover all of them and states can be counted inside a belief.
+
+    Instances are handled by the environment, the evaluation loop and the
+    planners' internal simulation; a partially observable agent only ever
+    sees the states it imagines, never the environment's.
+    """
+
     grid: NDArray[np.int8]
     agent_pos: Tuple[int, int]
     agent_dir: int
     carrying: Optional[int]
 
     def copy(self) -> MinigridState:
-        """Fast copy: ndarray.copy for the grid, direct assignment for scalars.
+        """Copy the grid, share the rest.
 
-        Uses ``self.grid.copy()`` (native ndarray method) instead of
-        ``np.copy(self.grid)`` — ~2.1x faster on 11x6 int8 grids
-        because it bypasses the ``np.array(...)`` re-wrapping
-        overhead that ``np.copy`` forwards to. On 47.9M calls per
-        smoke run this saves ~17s wall-clock.
+        Overrides the deep copy inherited from :class:`State`: the grid is
+        the only mutable field, and this is called tens of millions of
+        times per run by the planners.
         """
         return MinigridState(
             grid=self.grid.copy(),
@@ -629,10 +725,10 @@ class MinigridState(State):
         )
 
     def __eq__(self, other: object) -> bool:
-        # Fast bytes-comparison: ~12x faster than np.array_equal on the
-        # 11x6 int8 grid (172ns vs 2081ns) — the bytes are dtype-tagged
-        # so int8/int8 comparison is unambiguous. ~14s saved on a
-        # 7.1M-call dict-heavy PF eval.
+        # Overrides the hash-based equality of `State` with a field-by-
+        # field comparison. Grids are compared through their bytes, which
+        # is unambiguous once the shapes are known to match and much
+        # cheaper than np.array_equal at this call volume.
         if not isinstance(other, MinigridState):
             return False
         if not isinstance(self.grid, np.ndarray) or not isinstance(other.grid, np.ndarray):
@@ -649,9 +745,12 @@ class MinigridState(State):
 
     @property
     def front_pos(self) -> Tuple[int, int]:
-        """Get the position of the cell that is right in front of the agent."""
-        # Tuple arithmetic — avoids 2 np.array allocations + tolist()
-        # round-trip on every call. ~50x faster on the PF hot path.
+        """Get the position of the cell that is right in front of the agent.
+
+        May fall outside the grid; callers check the bounds themselves.
+        """
+        # Plain tuple arithmetic rather than numpy: this runs inside the
+        # transition model, on every simulated step.
         dx, dy = DIR_TO_VEC[self.agent_dir]
         return (self.agent_pos[0] + int(dx), self.agent_pos[1] + int(dy))
 
@@ -664,16 +763,28 @@ class MinigridState(State):
         return self.grid.shape[1]
 
     def get_type_indices(self, obj_type: int) -> List[Tuple[int, int]]:
+        """Positions of every cell holding ``obj_type``, as (x, y) pairs."""
         idxs = np.where(self.grid == obj_type)  # Returns (row_indices, col_indices)
         return list(zip(idxs[0], idxs[1]))  # Combine row and column indices
 
     def encode(self) -> MinigridState:
+        """Identity: generated code manipulates the state object itself.
+
+        Domains whose states need a different representation for the
+        language model do the conversion here; this one does not, so what
+        a model reads and what the planner holds are the same object.
+        """
         return self
 
     @staticmethod
     def decode(obj: MinigridState) -> MinigridState:
-        # Fast path: same dtype-check trick as MinigridObservation.decode.
-        # On 12M+ calls during a PF eval, this saves ~3s wall-clock.
+        """Rebuild a state from an encoded one.
+
+        The grid is copied rather than shared, so code that writes into
+        the returned state cannot alter the one it was built from.
+        """
+        # Skip the dtype coercion when the array already has the expected
+        # type, as it does on the hot path.
         grid = obj.grid
         if isinstance(grid, np.ndarray) and grid.dtype == np.int8:
             new_grid = grid.copy()
@@ -689,10 +800,17 @@ class MinigridState(State):
     def get_field_of_view(self, view_size: int) -> NDArray[np.int8]:
         """Returns the field of view in front of the agent.
 
+        A ``view_size`` square anchored on the agent, rotated so that the
+        result is always read as if the agent were facing up, with the
+        agent itself at the bottom-centre cell. Cells outside the grid
+        come back as wall, so the view has a fixed shape wherever the
+        agent stands. This is the geometry the observation model and the
+        particle filter both assume.
+
         DO NOT modify this function.
         """
-        # Numba fast path — pure int8, bit-exact with the Python branch
-        # below. Saves ~30s on a 12M-call PF eval (500ns vs 3000ns).
+        # Compiled path; falls through to the identical Python one below
+        # when numba is unavailable.
         if _HAS_NUMBA:
             return _fov_compute_numba(
                 self.grid,
@@ -724,10 +842,9 @@ class MinigridState(State):
         else:
             assert False, "invalid agent direction"
 
-        # np.empty + fill is 2x faster than np.full (704ns vs 1429ns)
-        # because it skips the value-broadcast init pass. Saves ~9s on
-        # a 12M-call PF eval. Bit-equal: the slice below overwrites
-        # every cell that maps into the grid, the rest stays at WALL.
+        # Everything starts as wall; the slice below then overwrites every
+        # cell that falls inside the grid, so what remains is exactly the
+        # part of the view that lies outside it.
         fov = np.empty((view_size, view_size), dtype=self.grid.dtype)
         fov.fill(ObjectTypes.wall)
 
@@ -746,11 +863,10 @@ class MinigridState(State):
             gx0:gx1, gy0:gy1
         ]
 
-        # Rotate via direct slicing instead of np.rot90 (which calls
-        # np.flip + transpose internally → ~4400ns/call). Manual slicing
-        # uses strided views — 20x faster (~220ns) and bit-equal on
-        # all 4 cases. ~38s saved on a 9M-call profile run.
-        # k = -(agent_dir+1) mod 4
+        # Rotate the view into the agent's frame, k = -(agent_dir+1) mod 4.
+        # Written as explicit slicing rather than np.rot90: identical
+        # result on all four cases, but strided views instead of the
+        # copies rot90 makes, which matters at this call volume.
         n_rot = (-(self.agent_dir + 1)) % 4
         if n_rot == 1:
             fov = fov.T[::-1]
@@ -782,6 +898,11 @@ class MinigridState(State):
 
 
 def minigrid_empty_observation_gen(**kwargs: Any) -> MinigridObservation:
+    """A blank observation of the right shape for this domain.
+
+    Observation models receive one of these as a template and return it
+    unchanged when they have nothing to report.
+    """
     return MinigridObservation(
         image=np.full((3, 3), ObjectTypes.empty),
         agent_dir=0,
@@ -789,6 +910,13 @@ def minigrid_empty_observation_gen(**kwargs: Any) -> MinigridObservation:
     )
 
 def minigrid_empty_state_gen(env_name: str = "MiniGrid-Empty-5x5-v0") -> MinigridState:
+    """A blank state with the walls of ``env_name`` and nothing else.
+
+    The environment is instantiated only to read its layout, then every
+    non-wall cell is cleared: the result has the right dimensions and
+    boundaries but no goal, key or door. Configurations pass it to an
+    agent as its ``empty_state`` template.
+    """
     env: MiniGridEnv = gym.make(env_name, agent_view_size=3, max_steps=1)
     _ = env.reset()
     grid = env.unwrapped.grid
@@ -803,6 +931,13 @@ def minigrid_empty_state_gen(env_name: str = "MiniGrid-Empty-5x5-v0") -> Minigri
 
 
 def goal_heuristic_gen() -> Heuristic:
+    """Search heuristic: normalised Manhattan distance to the nearest goal.
+
+    Divided by the number of cells so the value stays in [0, 1] and does
+    not overwhelm the costs it is added to. A state with no visible goal
+    scores zero, which leaves such states indistinguishable to the search.
+    """
+
     def goal_heuristic(state: MinigridState) -> float:
         if len(state.get_type_indices(ObjectTypes.goal)) == 0:
             return 0
@@ -819,6 +954,7 @@ def goal_heuristic_gen() -> Heuristic:
 
 
 def get_empty_room(width: int, height: int) -> MinigridState:
+    """Build a bare walled room of the given size, agent in the corner."""
     grid = Grid(width, height)
 
     # Place walls around the entire edge of the map
@@ -837,6 +973,13 @@ def get_empty_room(width: int, height: int) -> MinigridState:
 def minigrid_hardcoded_initial_model_gen(
     env_name: str = "MiniGrid-Empty-5x5-v0",
 ) -> InitialModel:
+    """Reference initial-state model: reset a real environment and read it.
+
+    Sampling a start means resetting a private copy of the environment,
+    so the distribution over starts is exactly the one the agent will
+    face. The reset seeds are drawn from a fixed high range, disjoint
+    from the small seeds the evaluation loop uses for its episodes.
+    """
     env: MiniGridEnv = gym.make(env_name, agent_view_size=3, max_steps=1)
     env.unwrapped.see_through_walls = SEE_THROUGH_WALLS
 
@@ -859,10 +1002,17 @@ def minigrid_hardcoded_initial_model_fixed_grid_random_agent_gen(
     max_position_distance: int = 2,
     fully_random: bool = True,
 ) -> InitialModel:
-    """
-    Initial model with fixed grid (from env). Goal position is fixed.
-    - fully_random=True: agent position and direction uniformly random over valid cells.
-    - fully_random=False: agent within max_position_distance of original, original direction.
+    """Initial-state model over agent poses only, on one fixed layout.
+
+    The layout is read once from a seed-0 reset and reused for every
+    sample: walls and goal never move, and only the agent's pose is
+    drawn. This isolates uncertainty about where the agent is from
+    uncertainty about what the world contains.
+
+    - ``fully_random=True``: position and direction uniform over the
+      cells the agent may occupy, which excludes walls, lava and the goal.
+    - ``fully_random=False``: position within ``max_position_distance``
+      of the layout's own start, keeping its original direction.
     """
     env: MiniGridEnv = gym.make(env_name, agent_view_size=3, max_steps=1)
     env.unwrapped.see_through_walls = SEE_THROUGH_WALLS
@@ -914,6 +1064,14 @@ def minigrid_hardcoded_initial_model_fixed_grid_random_agent_gen(
 
 
 def minigrid_hardcoded_reward_model_gen() -> RewardModel:
+    """Reference reward model: 1 for reaching a goal, 0 otherwise.
+
+    Both goal and lava end the episode, and neither is charged a cost, so
+    the discounted return only rewards reaching the goal quickly. The
+    cell is read from ``state``, the grid before the move, at the
+    position the agent ends up in.
+    """
+
     def minigrid_hardcoded_reward_model(
         state: MinigridState, action: ActType, next_state: MinigridState
     ) -> Tuple[float, bool]:
@@ -933,6 +1091,11 @@ def minigrid_hardcoded_reward_model_gen() -> RewardModel:
 
 
 def process_vis(grid: NDArray[np.int8], agent_pos: tuple[int, int]) -> NDArray[np.int8]:
+    """Visibility mask over a field of view, for occluded observations.
+
+    Only reachable when :data:`SEE_THROUGH_WALLS` is False; with the
+    module's default nothing calls it.
+    """
     # Initialize the boolean mask.
     mask = np.zeros(grid.shape, dtype=bool)
     mask[agent_pos] = True
@@ -980,10 +1143,19 @@ def minigrid_hardcoded_observation_model_gen() -> ObservationModel:
 
 
 def minigrid_hardcoded_transition_model_gen() -> TransitionModel:
+    """Reference transition model: MiniGrid's dynamics, written out.
+
+    Deterministic. Turning always succeeds; moving forward is blocked by
+    walls, doors that are not open, and objects lying on the floor;
+    pickup, drop and toggle act on the cell directly in front. An action
+    with no effect leaves the state as it was, and an unknown action code
+    raises.
+    """
+
     def minigrid_hardcoded_transition_model(
         state: MinigridState, action: Actions
     ) -> MinigridState:
-        """Applies a hardcoded transition model for Minigrid."""
+        """Return the state that follows ``action``, leaving the input alone."""
 
         state = copy.deepcopy(state)
         # Create a copy of the current state
@@ -1063,6 +1235,13 @@ def grid_to_state(
     agent_dir: int,
     carrying: world_object.WorldObj | None = None,
 ) -> MinigridState:
+    """Convert a MiniGrid ``Grid`` and an agent pose into a MinigridState.
+
+    Cell by cell, MiniGrid objects become :class:`ObjectTypes` codes; the
+    carried object, given as a MiniGrid object, becomes a code too. This
+    is the only path by which the environment's internals enter the
+    representation used everywhere else.
+    """
     grid_array = np.zeros((grid.width, grid.height), dtype=np.int8)
     for x in range(grid.width):
         for y in range(grid.height):
@@ -1079,6 +1258,11 @@ def build_state(
     obs_dict: Dict,
     carrying: world_object.WorldObj | None,
 ) -> MinigridState:
+    """Reconstruct the true state from a wrapped gym observation dict.
+
+    Relies on the position and grid the wrappers at the top of this
+    module add to that dict, which is why the environment installs them.
+    """
     return grid_to_state(
         grid=obs_dict["grid"],
         agent_pos=obs_dict["agent_pos"],
@@ -1088,14 +1272,19 @@ def build_state(
 
 
 def build_obs(obs_dict: Dict, fully: bool = True) -> MinigridObservation:
-    """Build the POMDP-clean observation from a minigrid ``obs_dict``.
+    """Build the observation an agent receives from a gym ``obs_dict``.
 
-    Extracts the FOV image, the carried object (proprioception) and
-    the compass direction. ``reward`` and ``terminated`` stay at
-    their defaults here — they are populated in ``env.step`` because
-    they describe the step outcome, not the rendering.
+    Re-encodes the image into :class:`ObjectTypes` codes and picks up the
+    carried object and the facing direction. Absolute position and the
+    full grid are dropped here: this function is the boundary past which
+    the state does not travel.
 
-    Absolute position and the full grid are deliberately NOT exposed.
+    ``fully`` selects which image the dict holds. In the partially
+    observable case it is the field of view, whose bottom-centre cell is
+    the agent's own; in the fully observable case it is the whole grid
+    and the agent's cell is located through ``agent_pos``. Either way the
+    agent's cell is where the carried object is read from, since MiniGrid
+    encodes it there.
     """
     W, H, _ = obs_dict["image"].shape
 
@@ -1143,10 +1332,17 @@ def create_gif(
     fully_obs: bool = True,
     states: List[MinigridState] | None = None,
 ) -> None:
-    # The POMDP-clean observation does not carry agent_pos, so the
-    # rendering side has to reconstruct the pose from the recorded
-    # states (legitimate for a post-run visualisation utility — this
-    # path is never called during training / scoring).
+    """Render an episode as a GIF of the map the agent gradually uncovers.
+
+    Successive views are stitched onto a shared grid, so the animation
+    shows what had been seen by each step rather than the true world.
+
+    ``states`` is required because observations carry no position: the
+    poses needed to place each view on the map have to come from the
+    recorded states. Reading them is legitimate here — this is an
+    inspection utility that runs after an episode, never on the path that
+    produces a result.
+    """
     if states is None:
         raise ValueError(
             "create_gif now requires `states` for every call: the "
@@ -1209,6 +1405,14 @@ def create_gif(
 # -------- Belief related functions
 @dataclass
 class PartialGrid:
+    """A map built up from partial views, for rendering.
+
+    ``grid`` accumulates every cell seen so far; ``in_view`` is what the
+    current step reveals, drawn highlighted, and ``has_viewed`` is
+    everything seen since the start — cells absent from it are rendered
+    as unknown rather than as empty.
+    """
+
     grid: NDArray
     agent_pos: Tuple[int, int] = (0, 0)
     agent_dir: int = 0
@@ -1262,6 +1466,11 @@ def update_fo_grid_with_pose(
     agent_pos: Tuple[int, int] | NDArray[Any],
     agent_dir: int,
 ) -> PartialGrid:
+    """Fold a fully observable view into the rendered map.
+
+    The image is already in world coordinates, so it overwrites the map
+    directly, except where it is marked unseen.
+    """
     new_partial_grid = copy.deepcopy(partial_grid)
     new_partial_grid.agent_pos = agent_pos
     new_partial_grid.agent_dir = agent_dir
@@ -1275,6 +1484,14 @@ def update_po_grid_with_pose(
     agent_pos: Tuple[int, int] | NDArray[Any],
     agent_dir: int,
 ) -> PartialGrid:
+    """Fold a partial view into the rendered map.
+
+    The view is expressed relative to the agent, so each of its cells is
+    mapped back to world coordinates through the forward and right
+    vectors of the current heading before being written. Cells that fall
+    outside the map are skipped, and the agent's own cell is not written,
+    since it says nothing about what the world holds there.
+    """
     new_partial_grid = copy.deepcopy(partial_grid)
     new_partial_grid.agent_pos = agent_pos
     new_partial_grid.agent_dir = agent_dir
@@ -1317,6 +1534,13 @@ def render_tile(
     subdivs: int = 3,
     unseen: bool = False,
 ) -> NDArray[np.uint8]:
+    """Render one cell, caching the result.
+
+    Tiles are drawn oversampled and downsampled at the end, which is how
+    the edges come out smooth. Identical tiles recur constantly across a
+    frame and across frames, so rendered tiles are memoised in MiniGrid's
+    own cache, keyed by everything that affects the drawing.
+    """
     # Hash map lookup key for the cache
     key: tuple[Any, ...] = (obj, agent_dir, highlight, tile_size, unseen)
 
@@ -1374,14 +1598,15 @@ def render_tile(
 def render_partial_grid(
     partial_grid: PartialGrid, tile_size: int = 32, fully_obs: bool = False
 ) -> NDArray[np.uint8]:
-    """Create a color gradient based on class probabilities.
+    """Render a :class:`PartialGrid` into an RGB image.
 
-    Parameters:
-    probabilities (numpy array): A H x W x C array of class probabilities.
-    class_to_color (dict): A dictionary mapping class indices to RGB colors.
+    Each cell is drawn through :func:`render_tile`; the cells currently in
+    view are highlighted, and cells never seen are hatched unless the
+    caller asks for the fully observable rendering.
 
-    Returns:
-    numpy array: A H x W x 3 array of colors representing the gradient.
+    Returns an array of shape ``(height * tile_size, width * tile_size, 3)``:
+    image rows are the grid's ``y``, so the axes are transposed with
+    respect to the state's ``[x, y]`` indexing.
     """
 
     W, H = partial_grid.grid.shape[0], partial_grid.grid.shape[1]
@@ -1419,17 +1644,27 @@ def render_partial_grid(
 
 
 class MinigridEnvironment(Environment):
+    """A MiniGrid level behind the interface the evaluation loop expects.
+
+    Wraps a gym environment named by ``env_name`` and returns, at every
+    step, both the observation an agent may see and the true state, which
+    goes to the logs and the replay buffer.
+
+    The agent's view is three cells wide, and walls do not block sight
+    (see :data:`SEE_THROUGH_WALLS`), so what limits the agent is the
+    extent of its view. ``fully_obs`` switches the whole grid in as the
+    observation, which is used for the fully observable comparisons.
+    """
+
     def __init__(
         self,
         *args: Any,
         env_name: str = "MiniGrid-Empty-5x5-v0",
         fully_obs: bool = True,
-        # ``pure_obs`` / ``compass`` are deprecated — the single
-        # POMDP-clean ``MinigridObservation`` class replaces both
-        # variants. The kwargs are accepted (and ignored) so existing
-        # Hydra configs and demo collection scripts keep loading
-        # without a breaking change; drop them from configs at the
-        # next sweep.
+        # Accepted and ignored: these once selected between observation
+        # variants that a single observation class now replaces. They stay
+        # in the signature so that configurations and scripts still
+        # passing them keep loading.
         pure_obs: bool = False,
         compass: bool = False,
         **kwargs: Any,
@@ -1451,39 +1686,45 @@ class MinigridEnvironment(Environment):
         self._last_obs: Observation | None = None
 
     def get_last_obs(self) -> Observation:
+        """Return the most recent observation, for callers that stepped elsewhere."""
         if self._last_obs is None:
             raise RuntimeError("No observation available yet. Call reset() first.")
         return self._last_obs
 
     def _build_obs(self, obs_dict: Dict) -> MinigridObservation:
-        # Single POMDP-clean observation class — no more pure/compass
-        # branching; ``build_obs`` carries through image + direction +
-        # carrying, and ``step``/``reset`` below stamp reward and
-        # terminated on top so the observation contains exactly the
-        # five fields the agent is entitled to see.
+        """Reduce a gym observation dict to what an agent may perceive."""
         return build_obs(obs_dict, fully=self.fully_obs)
 
     def step(
         self, action: ActType
     ) -> Tuple[Observation, State, float, bool, bool, Dict[str, Any]]:
+        """Take one step and return the observation, the state and the outcome.
+
+        Reward and termination are returned beside the observation and are
+        not written into it: the observation stays purely perceptual, and
+        the rest of the pipeline reads outcomes from the replay buffer's
+        own arrays.
+        """
         obs_dict, reward, terminated, truncated, info = self.env.step(action)
         next_obs = self._build_obs(obs_dict)
         next_state = build_state(obs_dict, carrying=self.env.unwrapped.carrying)
-        # ``reward`` and ``terminated`` are returned as plain step-outcomes
-        # alongside the observation; they are NOT stamped onto ``next_obs``
-        # because the observation contract is purely perceptual (image,
-        # agent_dir, carrying). The downstream pipeline reads rewards /
-        # terminated from the buffer's parallel arrays.
+        # MiniGrid's success reward decays with the number of steps taken.
+        # It is reduced to a plain success flag here, so that how long an
+        # episode took shows up through discounting only.
         binary_reward = int(reward > 0.0)
         self._last_obs = next_obs
         return next_obs, next_state, binary_reward, terminated, truncated, info
 
     def reset(self, seed: int = 0) -> State:
+        """Start a new episode and return its true initial state.
+
+        The seed fixes the layout and the starting pose, so a given seed
+        always produces the same episode. The initial observation is kept
+        for :meth:`get_last_obs` rather than returned.
+        """
         obs_dict, _ = self.env.reset(seed=seed)
         initial_obs = self._build_obs(obs_dict)
         initial_state = build_state(obs_dict, carrying=self.env.unwrapped.carrying)
-        # Same convention as ``step``: the observation only carries the
-        # perceptual fields. There is nothing to stamp.
         self._last_obs = initial_obs
         return initial_state
     
@@ -1494,6 +1735,7 @@ class MinigridEnvironment(Environment):
         actions: List[int],
         episode_num: int,
     ) -> None:
+        """Write the episode's GIF into the run directory."""
         filename = os.path.join(get_log_dir(), f"episode{episode_num}_output.gif")
         create_gif(
             self.width,

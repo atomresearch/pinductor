@@ -21,7 +21,7 @@ alternative planners can be plugged in via Hydra.
 * `H(b)` is the entropy of the particle belief at the node (encourages
   exploration into ambiguous states; controlled by `entropy_coeff` in
   the YAMLs; Pinductor uses `1.0`, the baseline uses `0.0` — see paper
-  §App. D);
+  App. A.5);
 * `λ` is `lambda_coeff` (default 0.1).
 
 Expansion is bounded by `max_expansions` (default `5000`, matching Curtis

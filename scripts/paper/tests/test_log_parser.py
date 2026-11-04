@@ -1,4 +1,10 @@
-"""Tests du parseur de log."""
+"""Tests for the log parser.
+
+The sample below is the log format the parser has to accept. The partial
+and empty cases matter as much as the complete one: a crashed run must
+yield a partial result rather than an exception, since that is how the
+runner tells how far a subprocess got.
+"""
 from __future__ import annotations
 
 import sys
@@ -41,7 +47,7 @@ def test_parse_full_log() -> None:
 
 
 def test_parse_partial_crash() -> None:
-    partial = "\n".join(SAMPLE_LOG.splitlines()[:5])  # avant les rewards
+    partial = "\n".join(SAMPLE_LOG.splitlines()[:5])  # truncated before any reward
     r = parse(partial)
     assert r.rewards == []
     assert r.avg_reward is None

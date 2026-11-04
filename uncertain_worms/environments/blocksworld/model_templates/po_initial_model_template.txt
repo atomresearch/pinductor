@@ -1,0 +1,3 @@
+def initial_func(empty_state):
+    """Return a sampled initial BlocksState."""
+    pass

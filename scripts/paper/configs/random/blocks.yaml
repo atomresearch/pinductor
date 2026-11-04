@@ -1,0 +1,30 @@
+# condition=random env=blocks
+# Uniform action selection. The floor every other method is measured against.
+# Reads no demonstrations.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 120
+num_episodes: 10
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+instance: rand6
+cap: 6
+env_name: Blocks-rand6-po-v0
+extras:
+  environment: blocks
+  approach: random
+env:
+  _target_: uncertain_worms.environments.blocksworld.blocksworld_env.BlocksEnvironment
+  instance: ${instance}
+agent:
+  _target_: uncertain_worms.policies.random_policy.RandomPolicy
+  fully_obs: false
+  actions: *id001

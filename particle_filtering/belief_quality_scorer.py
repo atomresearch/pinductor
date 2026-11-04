@@ -39,8 +39,9 @@ exposes an ``agent_pos`` attribute. When absent (non-minigrid envs),
 scorer reports ``n_valid_steps=0`` with ``pf_score=0.0``.
 
 Score contract:
-- ``pf_score ∈ [0, 1]`` where 1 = PF collé sur la vérité, 0 = PF
-  uniformly spread or concentrated on a wrong position.
+- ``pf_score in [0, 1]``, where 1 means the filter has collapsed onto the
+  true state and 0 means it is spread uniformly or concentrated on a wrong
+  position.
 - Uses position-level match by default (``weight_on_pos_mean``) since
   the PF cannot resolve agent_dir / carrying from image observations
   alone on Minigrid. The exact-state match is reported as a secondary

@@ -1,0 +1,17 @@
+env,method,metric,value
+Corners,Tabular (10 demonstrations),return,0.084
+FourRooms,Tabular (10 demonstrations),return,0.071
+Lava,Tabular (10 demonstrations),return,0.046
+Unlock,Tabular (10 demonstrations),return,0.045
+Corners,Tabular (1000 demonstrations),return,0.322
+FourRooms,Tabular (1000 demonstrations),return,0.098
+Lava,Tabular (1000 demonstrations),return,0.070
+Unlock,Tabular (1000 demonstrations),return,0.299
+Corners,Pinductor,return,0.582
+FourRooms,Pinductor,return,0.433
+Lava,Pinductor,return,0.594
+Unlock,Pinductor,return,0.357
+Corners,Pinductor (no description),return,0.384
+FourRooms,Pinductor (no description),return,0.130
+Lava,Pinductor (no description),return,0.000
+Unlock,Pinductor (no description),return,0.243

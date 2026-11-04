@@ -1,0 +1,10 @@
+method,suite,llm_calls,tokens_in,tokens_out,api_cost_usd,wall_clock_h_min,wall_clock_h_max
+Pinductor,Block,33,375000,173000,0.45,3.1,3.1
+POMDP Coder,Block,21,63000,43000,0.10,0.9,0.9
+Single induction call,Block,1.6,17000,4000,0.01,1.1,1.1
+PPO-GRU,Block,0,0,0,0,6.8,9.5
+DreamerV3,Block,0,0,0,0,3.5,3.5
+Pinductor,MiniGrid (mean),14,165000,89000,0.22,0.7,0.7
+POMDP Coder,MiniGrid (mean),6,58000,47000,0.10,0.6,0.6
+Pinductor,MineSweeper Hard,7,170000,52000,0.16,2.4,2.4
+POMDP Coder,MineSweeper Hard,23,98000,36000,0.10,0.9,0.9

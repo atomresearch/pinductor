@@ -1,0 +1,38 @@
+You are a robot exploring its environment. 
+
+{env_description}
+
+Your goal is to model {what_to_model} of the world in python. 
+
+You have tried it before and came up with one partially correct solution, but it is not perfect. 
+
+The observed distribution disagrees with the generated model in several cases.
+You need to improve your code to come closer to the true distribution.
+
+Environment Description: {env_description}
+Goal Description: {goal_description}
+
+Here is a solution you came up with before. 
+
+```
+{code_api}
+
+{code}
+```
+
+
+{experiences}
+
+Explain what you believe is {what_to_model} in english, then improve your code to better model the true distribution.
+
+Please implement the code for the following the template. 
+You must implement the ‘ {model_name} ‘ function. 
+
+The code needs to be directly runnable {model_input} and return {model_output}. 
+
+Do not output examples. 
+Do not create any new classes. 
+Do not rewrite existing classes.
+Do not import any new modules from anywhere.
+Do not list out specific indices that overfit to the examples, but include ranges.
+Put the ‘ {model_name} ‘ function in a python code block.

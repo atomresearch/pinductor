@@ -97,6 +97,7 @@ class PO_DAStar(
     r"""Determinized‑A* (DA*) under partial observability, using combined
     reward-cost-entropy heuristic."""
 
+    _VALID_TIE_BREAKS = ("first", "random")
     _VALID_INFO_GAIN_MODES = (
         "entropy",
         "entropy_reduction",
@@ -116,6 +117,9 @@ class PO_DAStar(
         num_rollouts: int = 10,
         action_cost: float = 0.01,
         info_gain_mode: str = "entropy",
+        mi_bonus_coeff: float = 1.0,
+        tie_break: str = "first",
+        tie_epsilon: float = 0.0,
         **kwargs: Any,
     ) -> None:
         if info_gain_mode not in self._VALID_INFO_GAIN_MODES:
@@ -123,12 +127,21 @@ class PO_DAStar(
                 f"info_gain_mode must be one of {self._VALID_INFO_GAIN_MODES}, "
                 f"got {info_gain_mode!r}."
             )
+        if tie_break not in self._VALID_TIE_BREAKS:
+            raise ValueError(
+                f"tie_break must be one of {self._VALID_TIE_BREAKS}, "
+                f"got {tie_break!r}."
+            )
         if max_expansions is not None and max_expansions < 1:
             raise ValueError(
                 f"max_expansions must be ≥ 1 (or None), got {max_expansions}."
             )
         if num_rollouts < 1:
             raise ValueError(f"num_rollouts must be ≥ 1, got {num_rollouts}.")
+        if mi_bonus_coeff < 0:
+            raise ValueError(f"mi_bonus_coeff must be ≥ 0, got {mi_bonus_coeff}.")
+        if tie_epsilon < 0:
+            raise ValueError(f"tie_epsilon must be ≥ 0, got {tie_epsilon}.")
 
         self.empty_observation = empty_observation
         self.max_expansions = max_expansions
@@ -138,6 +151,9 @@ class PO_DAStar(
         self.num_rollouts = num_rollouts
         self.action_cost = action_cost
         self.info_gain_mode = info_gain_mode
+        self.mi_bonus_coeff = mi_bonus_coeff
+        self.tie_break = tie_break
+        self.tie_epsilon = tie_epsilon
         super().__init__(*args, **kwargs)
         # The base class assigns ``self.actions``; validate now that it
         # is a non-empty list (audit MIN8 — empty list silently degraded
@@ -211,6 +227,15 @@ class PO_DAStar(
         expanded_steps: Dict[BeliefNode[ActType], int] = {}
         cost_values: Dict[BeliefNode[ActType], float] = {}
         all_edges: List[Tuple[BeliefNode[ActType], BeliefNode[ActType], ActType]] = []
+        # A* heuristic. This search historically ignored `self.heuristic`, and two
+        # MiniGrid configs declare one that was therefore never applied; enabling it
+        # for them would silently change published numbers. So the gate is the
+        # binding contract instead of mere presence: only a heuristic that asks to
+        # be bound to the planner (`bind_planner`, see base_planner) is a
+        # cost-to-go over the planner's own models and takes part in the search.
+        # Every other config, including those two, behaves exactly as before.
+        use_h = hasattr(self.heuristic, "bind_planner")
+        node_h: Dict[BeliefNode[ActType], float] = {}
 
         start_belief = CategoricalBelief[StateType, ObsType](
             normalize(belief_state.particles)
@@ -252,13 +277,18 @@ class PO_DAStar(
             closed.add(current_node)
 
             if num_expansions <= 50 and steps <= 2:
-                # Log first expansions for debugging A* behavior
-                pos_summary = {str(tuple(s.agent_pos)): f"{p:.2f}" for s, p in list(current_node.belief.dist.items())[:5]}
+                # Log first expansions for debugging A* behavior. MiniGrid
+                # states expose agent_pos; other env families may only have
+                # a compact repr.
+                state_summary = {
+                    str(tuple(s.agent_pos)) if hasattr(s, "agent_pos") else repr(s): f"{p:.2f}"
+                    for s, p in list(current_node.belief.dist.items())[:5]
+                }
                 log.info(
                     f"[A*] exp={num_expansions} depth={steps} priority={priority:.3f} "
                     f"g={current_g:.3f} ent={current_node.belief.get_entropy():.3f} "
                     f"E[r]={current_node.expected_reward:.3f} "
-                    f"pos={pos_summary}"
+                    f"states={state_summary}"
                 )
 
             num_expansions += 1
@@ -381,15 +411,25 @@ class PO_DAStar(
                     # reward confidence.  When reward is high (goal nearby),
                     # the bonus vanishes; when reward ≈ 0 (lost), it dominates.
                     mi_term = 0.0
-                    if mi_bonus is not None and action in mi_bonus:
+                    if (
+                        self.mi_bonus_coeff > 0.0
+                        and mi_bonus is not None
+                        and action in mi_bonus
+                    ):
                         reward_confidence = max(abs(exp_r), 0.05)
-                        mi_term = -mi_bonus[action] / reward_confidence
+                        mi_term = -self.mi_bonus_coeff * mi_bonus[action] / reward_confidence
 
                     priority = self._priority_hook(
                         new_cost=new_cost, ig_term=ig_term, mi_term=mi_term,
                         child=child, parent_belief=current_node.belief,
                         action=action, exp_r=exp_r,
                     )
+                    if use_h:
+                        h_bel = 0.0 if child.terminal else sum(
+                            p * self.heuristic(s) for s, p in child.belief.dist.items()
+                        )
+                        priority = priority + h_bel
+                        node_h[child] = min(node_h.get(child, h_bel), h_bel)
 
                     all_edges.append((current_node, child, action))
                     if num_expansions <= 20 and steps == 0:
@@ -419,21 +459,56 @@ class PO_DAStar(
         # ==================================================================#
         # Search finished – pick best candidate by same objective
         # ==================================================================#
-        best = min(cost_values.keys(), key=lambda n: cost_values[n])
+        if use_h and cost_values:
+            # With a heuristic, return the path to a TERMINAL node if one was
+            # expanded, else to the frontier node closest to the goal. Plain
+            # min-f degenerates to the shallowest node when no goal is reached.
+            terminals = [n for n in cost_values if n.terminal]
+            if terminals:
+                best = min(terminals, key=lambda n: cost_values[n])
+            else:
+                best = min(cost_values.keys(), key=lambda n: node_h.get(n, float("inf")))
+        else:
+            best = min(cost_values.keys(), key=lambda n: cost_values[n])
         plan = self._reconstruct_plan(best, came_from, start_node)
+
+        root_action_costs: Dict[ActType, float] = {}
+        for child, (parent, act) in came_from.items():
+            if parent == start_node:
+                child_cost = cost_values.get(child, float("inf"))
+                if act not in root_action_costs or child_cost < root_action_costs[act]:
+                    root_action_costs[act] = child_cost
+
+        for node, node_cost in cost_values.items():
+            node_plan = self._reconstruct_plan(node, came_from, start_node)
+            if not node_plan:
+                continue
+            root_action = node_plan[0]
+            if root_action not in root_action_costs or node_cost < root_action_costs[root_action]:
+                root_action_costs[root_action] = node_cost
+
+        tie_candidates: List[ActType] = []
+        if plan and self.tie_break == "random" and root_action_costs:
+            chosen_cost = root_action_costs.get(plan[0], cost_values.get(best, float("inf")))
+            best_root_cost = min(root_action_costs.values())
+            if chosen_cost <= best_root_cost + self.tie_epsilon:
+                tie_candidates = [
+                    act
+                    for act, action_cost in root_action_costs.items()
+                    if action_cost <= best_root_cost + self.tie_epsilon
+                ]
+                if len(tie_candidates) > 1:
+                    plan[0] = random.choice(tie_candidates)
 
         # Log A* decision summary
         if plan:
             action_names = ['LEFT','RIGHT','FWD','PICKUP','DROP','TOGGLE']
             chosen = action_names[plan[0]] if plan[0] < 6 else str(plan[0])
-            # Compute per-action best cost at depth 0
-            depth0_actions = {}
-            for child, (parent, act) in came_from.items():
-                if parent == start_node:
-                    a_name = action_names[act] if act < 6 else str(act)
-                    if a_name not in depth0_actions or cost_values.get(child, float('inf')) < depth0_actions[a_name]:
-                        depth0_actions[a_name] = cost_values.get(child, float('inf'))
-            action_costs_str = " ".join([f"{a}={c:.2f}" for a, c in sorted(depth0_actions.items(), key=lambda x: x[1])])
+            root_actions = {
+                action_names[act] if act < 6 else str(act): cost
+                for act, cost in root_action_costs.items()
+            }
+            action_costs_str = " ".join([f"{a}={c:.6f}" for a, c in sorted(root_actions.items(), key=lambda x: x[1])])
             max_depth = max((s for _, (_, _, _, _, s) in zip(range(len(cost_so_far)),
                            [(0,0,0,n,expanded_steps.get(n,0)) for n in cost_so_far])
                            if True), default=0) if cost_so_far else 0
@@ -441,10 +516,14 @@ class PO_DAStar(
             if mi_bonus is not None:
                 mi_vals = " ".join(f"{action_names[a] if a < 6 else a}={mi_bonus.get(a,0):.3f}" for a in sorted(mi_bonus))
                 mi_str = f" mi_bonus=[{mi_vals}]"
+            tie_str = ""
+            if self.tie_break == "random" and tie_candidates:
+                tie_vals = " ".join(action_names[a] if a < 6 else str(a) for a in tie_candidates)
+                tie_str = f" tie_break=random tie_eps={self.tie_epsilon:g} tie_candidates=[{tie_vals}]"
             log.info(
                 f"[A*_DECISION] chosen={chosen} expansions={num_expansions} "
                 f"best_cost={cost_values.get(best, 0):.3f} plan_len={len(plan)} "
-                f"action_costs=[{action_costs_str}]{mi_str}"
+                f"action_costs=[{action_costs_str}]{mi_str}{tie_str}"
             )
 
         if self.visualize_graph:

@@ -1,0 +1,19 @@
+env,method,metric,value
+Empty,Optimal,return,0.922
+Corners,Optimal,return,0.865
+Lava,Optimal,return,0.727
+Unlock,Optimal,return,0.780
+FourRooms,Optimal,return,0.639
+Blocks,Optimal,return,0.383
+MineSweeper-Easy,Optimal,return,1.000
+MineSweeper-Medium,Optimal,return,1.000
+MineSweeper-Hard,Optimal,return,1.000
+Empty,GT models,return,0.922
+Corners,GT models,return,0.684
+Lava,GT models,return,0.564
+Unlock,GT models,return,0.748
+FourRooms,GT models,return,0.379
+Blocks,GT models,return,0.256
+MineSweeper-Easy,GT models,return,0.762
+MineSweeper-Medium,GT models,return,0.394
+MineSweeper-Hard,GT models,return,0.147

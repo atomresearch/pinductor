@@ -1,0 +1,93 @@
+# condition=random env=minesweeper_hard
+# Uniform action selection. Reads no demonstrations.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 54
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+- 10
+- 11
+- 12
+- 13
+- 14
+- 15
+- 16
+- 17
+- 18
+- 19
+- 20
+- 21
+- 22
+- 23
+- 24
+- 25
+- 26
+- 27
+- 28
+- 29
+- 30
+- 31
+- 32
+- 33
+- 34
+- 35
+- 36
+- 37
+- 38
+- 39
+- 40
+- 41
+- 42
+- 43
+- 44
+- 45
+- 46
+- 47
+- 48
+- 49
+- 50
+- 51
+- 52
+- 53
+- 54
+- 55
+- 56
+- 57
+- 58
+- 59
+- 60
+- 61
+- 62
+- 63
+env_name: MineSweeperHard
+extras:
+  environment: minesweeper_hard
+  approach: random
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+agent:
+  _target_: uncertain_worms.policies.random_policy.RandomPolicy
+  fully_obs: false
+  actions: *id001

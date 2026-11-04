@@ -1,0 +1,4 @@
+env,exact_share_pct,exact_share_basis,return_exact,return_non_exact
+Blocks,63,episodes,0.257,0.000
+Lava,50,seeds,0.514,0.457
+MineSweeper-Easy,0,149,0.762,0.676

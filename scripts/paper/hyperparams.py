@@ -1,26 +1,29 @@
-"""Runtime overrides paper — minimal par design.
+"""Runtime Hydra overrides, kept deliberately minimal.
 
-Depuis le refactor "modular YAML", **tous** les hyperparams scientifiques
-(``max_attempts``, ``num_particles``, ``entropy_coeff``, ``use_ucb1_selection``,
-``num_model_attempts``, ``lambda_coeff``, ``max_expansions``, ``fully_obs``,
-``dataset_path``, ``num_episodes``, ``max_steps``, ``env_name``…) sont figés
-dans les YAMLs auto-générés sous ``scripts/paper/configs/<condition>/<env>.yaml``
-par ``build_configs.py``.
+Every scientific hyperparameter (``max_attempts``, ``num_particles``,
+``entropy_coeff``, ``use_ucb1_selection``, ``num_model_attempts``,
+``lambda_coeff``, ``max_expansions``, ``fully_obs``, ``dataset_path``,
+``num_episodes``, ``max_steps``, ``env_name``, ...) is frozen in the
+generated YAML at ``scripts/paper/configs/<condition>/<env>.yaml``, which
+``build_configs.py`` produces. Those YAML files are the source of truth
+for what an experiment ran with; this module only adds what cannot be
+known until launch time:
 
-Ce module ne gère plus QUE le runtime :
-  - métadonnées ``+extras.*`` pour wandb (approach, environment, experiment).
-  - réinjection ``agent.dataset_path`` pour les **sweeps E2 offline** qui varient
-    le N_D (2/4/6/8/10).
-  - réinjection ``agent.num_model_attempts`` pour les **sweeps E2 online** qui
-    varient le M (1/3/5/10).
-  - ``num_episodes`` forcé pour les smoke tests (sinon hérité du YAML = 3).
-  - filtrage pour random/tabular qui n'acceptent pas les kwargs LLM.
-  - ``hp_hash`` reste la clé de dédup inter-exp du registre SQLite.
+  - ``+extras.*`` metadata used to tag the experiment tracker run;
+  - ``agent.dataset_path``, re-derived for the E2 offline sweep, whose
+    whole point is to vary the demonstration count N_D;
+  - ``agent.num_model_attempts`` for the E2 online sweep over M;
+  - ``num_episodes`` when a caller forces a shorter run (smoke tests);
+  - filtering: the random and tabular agents reject LLM-related kwargs,
+    so those overrides are dropped rather than passed and crashed on.
 
-Le modèle LLM (``llm_model``) n'est JAMAIS passé en override Hydra car
-curtis_baseline ne l'accepte pas dans son constructeur. Il est injecté via
-la variable d'environnement ``PAPER_LLM_MODEL`` lue par ``utils.py`` côté
-ours et curtis.
+The resulting dict is hashed by :func:`hp_hash` into the deduplication
+key of the SQLite registry, so anything added here changes run identity.
+
+The LLM id is never passed as a Hydra override: the baseline agent's
+constructor does not accept it. It travels through the ``PAPER_LLM_MODEL``
+environment variable, which the ``utils.py`` of both codebases reads when
+selecting an engine.
 """
 from __future__ import annotations
 
@@ -29,7 +32,8 @@ import json
 from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
-# Mapping env logique → nom MiniGrid (utilisé pour résoudre dataset_path)
+# Short env key -> registered MiniGrid id. The long form appears in
+# dataset filenames, which is why the mapping lives here.
 # ---------------------------------------------------------------------------
 ENV_NAMES: Dict[str, str] = {
     "lava":              "MyMiniGrid-LavaWall-v0",
@@ -41,18 +45,26 @@ ENV_NAMES: Dict[str, str] = {
     "unlock_stoch":      "MyMiniGrid-StochasticUnlock-v0",
 }
 
-CONDITIONS = ("ours", "curtis_their", "curtis_hardcoded", "random", "tabular")
+# Every condition that has configurations under scripts/paper/configs/. Keep
+# this in step with runner_backend, which decides where each of them runs; a
+# condition missing here is rejected at launch, and one missing there plans
+# zero runs without saying why.
+CONDITIONS = ("ours", "ours_hardcoded", "curtis_their", "curtis_hardcoded",
+              "random", "tabular", "direct_llm_po", "direct_llm_fo")
 
-# Conditions qui consomment dataset_path via leur constructeur agent.
+# Conditions whose agent constructor accepts dataset_path.
 _DATASET_CONSUMERS = ("curtis_their", "ours", "tabular")
-# Conditions LLM (reçoivent num_model_attempts via sweep E2_online)
+# Conditions that query an LLM, and therefore accept num_model_attempts.
 _LLM_CONDITIONS = ("curtis_their", "ours")
 
-# Tous les N_D valides pour les datasets générés par regenerate_datasets.py.
+# Demonstration counts for which a dataset file exists. Must be kept in
+# step with what regenerate_datasets.py writes: a value listed here but
+# missing on disk fails at launch, and a value present on disk but missing
+# here is rejected by resolve_overrides below.
 _VALID_N_DEMOS = (1, 2, 3, 4, 5, 6, 8, 10, 12)
 
 # ---------------------------------------------------------------------------
-# Défaut LLM (overridé par E4)
+# LLM used everywhere except the E4 ablation, which overrides it per atom.
 # ---------------------------------------------------------------------------
 DEFAULT_LLM = "qwen/qwen3.6-plus"
 
@@ -64,17 +76,20 @@ def resolve_overrides(
     llm_model: str = DEFAULT_LLM,
     extra: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Retourne le dict plat des overrides **runtime** pour un atome.
+    """Return the flat dict of runtime Hydra overrides for one atom.
 
-    Le YAML ``scripts/paper/configs/<condition>/<env>.yaml`` fournit déjà tous
-    les hyperparams scientifiques. On ne rajoute ici que :
-      - ``+extras.*`` pour le logging wandb.
-      - les paramètres **swept** (``agent.dataset_path`` pour E2 offline,
-        ``agent.num_model_attempts`` pour E2 online).
-      - ``num_episodes`` si explicitement forcé dans ``extra`` (smoke test).
+    The condition's YAML already carries the scientific hyperparameters,
+    so the returned dict holds only tracker metadata, the parameters a
+    sweep varies, and any key an experiment passed through ``extra``.
 
-    ``llm_model`` est **non-injecté** (Hydra) — il transite via la variable
-    d'environnement ``PAPER_LLM_MODEL`` (cf ``paper_runner.launch_group``).
+    ``llm_model`` is accepted for symmetry but never emitted as an
+    override; see the module docstring and ``paper_runner.launch_group``,
+    which exports it as an environment variable instead.
+
+    Raises:
+        KeyError: on an unknown env or condition, before anything is
+            launched, rather than letting Hydra fail inside a subprocess.
+        ValueError: when a requested demonstration count has no dataset.
     """
     if env not in ENV_NAMES:
         raise KeyError(f"Unknown env: {env!r}. Known: {sorted(ENV_NAMES)}")
@@ -87,21 +102,25 @@ def resolve_overrides(
     extra = dict(extra or {})
     env_name = ENV_NAMES[env]
 
-    # Métadonnées wandb (toujours)
+    # Tracker metadata, emitted for every condition. ours and
+    # ours_hardcoded are reported under a single approach name.
     overrides["+extras.approach"] = (
         "ours" if condition.startswith("ours") else condition
     )
     overrides["+extras.environment"] = env
     overrides["+extras.experiment"] = "paper"
 
-    # Sweep E2 offline : N_D → dataset_path (uniquement pour conditions qui
-    # acceptent dataset_path). Si non-swept, le dataset_path du YAML (pointant
-    # vers _paper_N10.pkl) est conservé.
+    # E2 offline sweep: N_D selects a dataset file. When the atom does not
+    # sweep N_D, the YAML's own dataset_path is left untouched.
     n_demos = int(extra.pop("agent.num_input_examples", 0)) if \
         "agent.num_input_examples" in extra else None
     if n_demos is not None and n_demos not in _VALID_N_DEMOS:
-        # Fail loud: if a new N_D is added to E2_OFFLINE_SWEEP, the
-        # dataset .pkl and ``_VALID_N_DEMOS`` must both be updated.
+        # Fail loudly instead of falling back to a default dataset. A
+        # silent fallback is undetectable downstream: the atom keeps the
+        # N_D it asked for in its exp_id while reading another dataset,
+        # and the registry then holds sweep points that are duplicates of
+        # each other. Adding a sweep value means adding both the .pkl and
+        # an entry in _VALID_N_DEMOS.
         raise ValueError(
             f"agent.num_input_examples={n_demos} not in _VALID_N_DEMOS="
             f"{_VALID_N_DEMOS}. Generate the corresponding _paper_N{n_demos}.pkl "
@@ -112,18 +131,20 @@ def resolve_overrides(
             f"environments/minigrid/trajectory_data/{env_name}_paper_N{n_demos}.pkl"
         )
 
-    # Sweep E2 online : num_model_attempts (uniquement LLM conditions)
+    # E2 online sweep. Popped for every condition, but only re-emitted for
+    # the LLM ones: the others would reject the kwarg at construction.
     M = extra.pop("agent.num_model_attempts", None)
     if M is not None and condition in _LLM_CONDITIONS:
         overrides["agent.num_model_attempts"] = M
 
-    # Smoke test / mini : num_episodes forcé
+    # Only forced when a caller asks for it; otherwise the YAML decides.
     if "num_episodes" in extra:
         overrides["num_episodes"] = extra.pop("num_episodes")
 
-    # Toute autre clé dans ``extra`` est passée telle-quelle (Hydra override
-    # libre). À utiliser avec précaution : le YAML du paper est la source de
-    # vérité pour les hyperparams figés.
+    # Remaining keys pass through as free Hydra overrides. They change the
+    # hp_hash and therefore run identity, while leaving no trace in the
+    # YAML that documents the condition, so prefer editing the YAML for
+    # anything meant to be permanent.
     for k, v in extra.items():
         overrides[k] = v
 
@@ -131,10 +152,12 @@ def resolve_overrides(
 
 
 def hp_hash(overrides: Dict[str, Any]) -> str:
-    """SHA256 JSON-canonicalisé des overrides → clé de dédup inter-exp.
+    """Hash an override dict into the registry's deduplication key.
 
-    Stable : même dict → même hash. Sensible à toute modification (clé, valeur,
-    type). Utilisé comme 6e composante de la clé unique du registre.
+    Canonical JSON, so key insertion order does not matter, but any change
+    of key, value or value type yields a different hash. This is the sixth
+    component of the registry's unique key: two experiments that resolve
+    to the same overrides share their episodes instead of re-running them.
     """
     canonical = json.dumps(overrides, sort_keys=True, separators=(",", ":"),
                            default=str)
@@ -142,18 +165,20 @@ def hp_hash(overrides: Dict[str, Any]) -> str:
 
 
 def as_hydra_args(overrides: Dict[str, Any]) -> list[str]:
-    """Convertit les overrides en liste d'args CLI Hydra.
+    """Render an override dict as Hydra command-line arguments.
 
-    Les YAML du projet sont en mode struct (refusent les clés non déclarées).
-    On utilise donc ``++key=value`` (override-or-append) pour les clés
-    standard.
+    The prefix carries the meaning:
 
-    Les clés préfixées ``+`` (ex. ``+extras.approach``) utilisent la syntaxe
-    append-pure. Les clés ``hydra.*`` et certaines clés natives
-    (``env_name``, ``seed``, ``num_episodes``, ``max_steps``) sont toujours
-    présentes dans les YAML paper → ``key=value`` simple.
+      - ``++key=value`` (default) is override-or-append. The configs are
+        loaded in struct mode, which rejects a plain assignment to a key
+        the YAML does not declare, so this form is used for anything that
+        may or may not already exist.
+      - keys written with a leading ``+`` in the dict are pure appends and
+        keep their own prefix.
+      - ``hydra.*`` and the few keys always present in the generated YAML
+        are emitted as plain ``key=value``.
 
-    ``True/False`` → ``true/false`` (convention Hydra/OmegaConf).
+    Booleans are lowercased to match OmegaConf's literals.
     """
     out: list[str] = []
     for k, v in overrides.items():

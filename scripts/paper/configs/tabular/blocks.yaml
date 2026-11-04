@@ -1,0 +1,60 @@
+# condition=tabular env=blocks
+# Counts transitions, rewards and observations from the same demonstrations
+# the LLM methods read, then plans on the tables. Blocks has 105,840 reachable
+# states against 780 demonstration transitions, so almost every cell stays
+# empty. That gap is the comparison, not a defect of the estimator.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 120
+num_episodes: 10
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+instance: rand6
+cap: 6
+env_name: Blocks-rand6-po-v0
+extras:
+  environment: blocks
+  approach: tabular
+env:
+  _target_: uncertain_worms.environments.blocksworld.blocksworld_env.BlocksEnvironment
+  instance: ${instance}
+agent:
+  _target_: uncertain_worms.policies.tabular_learners.Tabular_TROI_PartiallyObsPlanningAgent
+  fully_obs: false
+  actions: *id001
+  max_attempts: 50000
+  num_particles: 10
+  dataset_path: environments/blocksworld/trajectory_data/${instance}_demos.pkl
+  empty_state:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_state_gen
+    instance: ${instance}
+  empty_observation:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+    cap: ${cap}
+  planner:
+    _target_: uncertain_worms.planners.PO_DAStar.PO_DAStar
+    actions: *id001
+    max_expansions: 5000
+    lambda_coeff: 0.0
+    entropy_coeff: 0.0
+    action_cost: 0.01
+    num_rollouts: 1
+    empty_observation:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+      cap: ${cap}
+    initial_model:
+      _target_: uncertain_worms.structs.empty_initial_model_gen
+    transition_model:
+      _target_: uncertain_worms.structs.empty_transition_model_gen
+    reward_model:
+      _target_: uncertain_worms.structs.empty_reward_model_gen
+    observation_model:
+      _target_: uncertain_worms.structs.empty_observation_model_gen

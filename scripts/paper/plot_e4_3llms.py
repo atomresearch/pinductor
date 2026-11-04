@@ -1,16 +1,17 @@
-"""E4 figure : 2 envs × 3 LLMs grouped bars.
+"""LLM ablation figure: 2 envs x 3 language models, grouped bars.
 
-Data sources :
-  - qwen3-14b      : E4_qwen__qwen3_14b
-  - qwen3.6-plus   : E2_offline_ND10 condition='ours' (default LLM)
-  - claude-opus-4.7: E4_anthropic__claude_opus_4_7
+The three arms come from two different experiments. The small and frontier
+models were run as the LLM ablation; the default model is the arm the
+ablation does not re-run, so its episodes are taken from the
+sample-efficiency experiment at the matching demonstration count, where
+the configuration is identical.
 
-For qwen3.6-plus we scan the disk (``outputs/paper_runs/runs/E2_offline_ND10__<env>__ours__*``)
-because the registry rows for the regression batches were purged but the
-on-disk ``result.json`` files survive. We deduplicate per (seed, ep) by
-keeping the row with the latest mtime.
+That third arm is read from the run directories on disk rather than the
+registry, whose rows for those batches no longer exist while the
+``result.json`` files do. Duplicates are resolved per (seed, episode) by
+keeping the most recently written file.
 
-y-axis : mean episode reward (avec error bars = SEM).
+y-axis: mean episode reward, error bars are the standard error.
 """
 from __future__ import annotations
 

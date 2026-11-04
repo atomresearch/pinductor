@@ -1,0 +1,89 @@
+env,method,metric,value
+Blocks,Optimal,return,0.383
+Blocks,Optimal,solved_pct,100
+MineSweeper-Easy,Optimal,return,1.000
+MineSweeper-Easy,Optimal,solved_pct,100
+MineSweeper-Medium,Optimal,return,1.000
+MineSweeper-Medium,Optimal,solved_pct,100
+MineSweeper-Hard,Optimal,return,1.000
+MineSweeper-Hard,Optimal,solved_pct,100
+Blocks,POMDP Coder,return,0.352
+Blocks,POMDP Coder,solved_pct,100
+MineSweeper-Easy,POMDP Coder,return,0.723
+MineSweeper-Easy,POMDP Coder,solved_pct,67
+MineSweeper-Medium,POMDP Coder,return,0.184
+MineSweeper-Medium,POMDP Coder,solved_pct,0
+MineSweeper-Hard,POMDP Coder,return,0.057
+MineSweeper-Hard,POMDP Coder,solved_pct,0
+Blocks,Direct LLM (FO),return,0.277
+Blocks,Direct LLM (FO),solved_pct,97
+MineSweeper-Easy,Direct LLM (FO),return,0.721
+MineSweeper-Easy,Direct LLM (FO),solved_pct,83
+MineSweeper-Medium,Direct LLM (FO),return,0.393
+MineSweeper-Medium,Direct LLM (FO),solved_pct,63
+MineSweeper-Hard,Direct LLM (FO),return,0.246
+MineSweeper-Hard,Direct LLM (FO),solved_pct,30
+Blocks,GT models,return,0.256
+Blocks,GT models,solved_pct,97
+MineSweeper-Easy,GT models,return,0.762
+MineSweeper-Easy,GT models,solved_pct,60
+MineSweeper-Medium,GT models,return,0.394
+MineSweeper-Medium,GT models,solved_pct,3
+MineSweeper-Hard,GT models,return,0.147
+MineSweeper-Hard,GT models,solved_pct,0
+Blocks,DreamerV3 (demonstration-seeded),return,0.165
+Blocks,DreamerV3 (demonstration-seeded),solved_pct,75
+MineSweeper-Easy,DreamerV3 (demonstration-seeded),return,0.223
+MineSweeper-Easy,DreamerV3 (demonstration-seeded),solved_pct,20
+MineSweeper-Medium,DreamerV3 (demonstration-seeded),return,0.098
+MineSweeper-Medium,DreamerV3 (demonstration-seeded),solved_pct,4
+MineSweeper-Hard,DreamerV3 (demonstration-seeded),return,0.087
+MineSweeper-Hard,DreamerV3 (demonstration-seeded),solved_pct,0
+Blocks,Pinductor,return,0.163
+Blocks,Pinductor,solved_pct,60
+MineSweeper-Easy,Pinductor,return,0.676
+MineSweeper-Easy,Pinductor,solved_pct,67
+MineSweeper-Medium,Pinductor,return,0.146
+MineSweeper-Medium,Pinductor,solved_pct,0
+MineSweeper-Hard,Pinductor,return,0.098
+MineSweeper-Hard,Pinductor,solved_pct,0
+Blocks,Direct LLM (PO),return,0.123
+Blocks,Direct LLM (PO),solved_pct,50
+MineSweeper-Easy,Direct LLM (PO),return,0.489
+MineSweeper-Easy,Direct LLM (PO),solved_pct,67
+MineSweeper-Medium,Direct LLM (PO),return,0.187
+MineSweeper-Medium,Direct LLM (PO),solved_pct,13
+MineSweeper-Hard,Direct LLM (PO),return,0.155
+MineSweeper-Hard,Direct LLM (PO),solved_pct,0
+Blocks,PPO-GRU,return,0.000
+Blocks,PPO-GRU,solved_pct,0
+MineSweeper-Easy,PPO-GRU,return,0.311
+MineSweeper-Easy,PPO-GRU,solved_pct,7
+MineSweeper-Medium,PPO-GRU,return,0.090
+MineSweeper-Medium,PPO-GRU,solved_pct,0
+MineSweeper-Hard,PPO-GRU,return,0.061
+MineSweeper-Hard,PPO-GRU,solved_pct,0
+Blocks,DreamerV3 (online),return,0.000
+Blocks,DreamerV3 (online),solved_pct,0
+MineSweeper-Easy,DreamerV3 (online),return,0.235
+MineSweeper-Easy,DreamerV3 (online),solved_pct,29
+MineSweeper-Medium,DreamerV3 (online),return,0.090
+MineSweeper-Medium,DreamerV3 (online),solved_pct,1
+MineSweeper-Hard,DreamerV3 (online),return,0.054
+MineSweeper-Hard,DreamerV3 (online),solved_pct,0
+Blocks,Tabular,return,0.000
+Blocks,Tabular,solved_pct,0
+MineSweeper-Easy,Tabular,return,0.292
+MineSweeper-Easy,Tabular,solved_pct,7
+MineSweeper-Medium,Tabular,return,0.101
+MineSweeper-Medium,Tabular,solved_pct,0
+MineSweeper-Hard,Tabular,return,0.090
+MineSweeper-Hard,Tabular,solved_pct,3
+Blocks,Random,return,0.000
+Blocks,Random,solved_pct,0
+MineSweeper-Easy,Random,return,0.211
+MineSweeper-Easy,Random,solved_pct,0
+MineSweeper-Medium,Random,return,0.126
+MineSweeper-Medium,Random,solved_pct,0
+MineSweeper-Hard,Random,return,0.062
+MineSweeper-Hard,Random,solved_pct,0

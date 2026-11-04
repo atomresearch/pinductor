@@ -15,7 +15,12 @@ build/
 lib
 checkpoints
 
-# Copied from a repo that stored these datasets in Git LFS. The files in this
-# import are only LFS pointer stubs, so staging them here breaks pushes.
+# Inherited from a repository that kept these datasets in Git LFS, where the
+# files here were only pointer stubs. They are real content now, and the
+# conditions that run from this directory read them from here, so the paper's
+# demonstration sets are checked in. Everything else stays ignored.
 uncertain_worms/environments/**/trajectory_data/*.pkl
 uncertain_worms/environments/**/noisy_trajectory_data/*.pkl
+!uncertain_worms/environments/**/trajectory_data/*_paper_N*.pkl
+!uncertain_worms/environments/blocksworld/trajectory_data/*_demos.pkl
+!uncertain_worms/environments/popgym/trajectory_data/*_random_N*.pkl

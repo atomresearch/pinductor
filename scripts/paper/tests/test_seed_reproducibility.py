@@ -1,12 +1,15 @@
-"""Régression : curtis et ours doivent produire le MÊME état initial pour
-le même seed (reproductibilité atomique de la comparaison).
+"""The two codebases must build the same environment from the same seed.
 
-Historique du bug : ``curtis_baseline/main.py:105`` utilisait
-``env.reset(seed=np.random.randint(0, 10000))`` → grille d'éval aléatoire à
-chaque run → ours vs curtis ne comparaient pas la même instance physique.
+Every comparison in the paper is paired: for a given seed and episode,
+method and baseline are meant to face the identical instance. That holds
+only if both reset their environment from the seed the runner passes. A
+codebase that draws its own random seed instead evaluates on a different
+grid, and the resulting difference in reward measures the instances rather
+than the methods.
 
-Ce test instancie un env minigrid avec le même seed dans les 2 codebases et
-compare les grilles initiales. S'il échoue, la comparaison paper est biaisée.
+The test resets one MiniGrid environment on each side with the same seed
+and compares the initial states. A failure here invalidates the paired
+comparison itself, not only this file.
 """
 from __future__ import annotations
 
@@ -17,6 +20,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 
 
+# Source run in a subprocess per side: only the import root differs, and
+# the grid is compared through a hash so the two states never have to be
+# unpickled in the same interpreter.
 _SNIPPET = r"""
 import sys, hashlib, numpy as np
 sys.path.insert(0, __ROOT__)
@@ -34,6 +40,7 @@ print("grid_hash=" + h)
 
 
 def _run_side(side: str) -> dict:
+    """Return the initial state one codebase produces for seed 0."""
     root = str(REPO / "curtis_baseline") if side == "curtis" else str(REPO)
     code = _SNIPPET.replace("__ROOT__", repr(root))
     proc = subprocess.run(
@@ -41,6 +48,8 @@ def _run_side(side: str) -> dict:
     )
     out = {}
     for ln in proc.stdout.splitlines():
+        # Imported simulation libraries print banners containing "=";
+        # those prefixes exclude them from the parsed output.
         if "=" in ln and not ln.startswith(("pybullet", "All joint")):
             k, _, v = ln.partition("=")
             out[k.strip()] = v.strip()

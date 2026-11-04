@@ -1,0 +1,3 @@
+def reward_func(state, action, next_state):
+    """Return (reward: float, done: bool) for the transition."""
+    pass

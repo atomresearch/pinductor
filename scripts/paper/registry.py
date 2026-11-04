@@ -1,13 +1,20 @@
-"""Registre SQLite central pour les runs papier.
+"""SQLite registry: what has been run, what it produced, what is left.
 
-Clé unique : ``(exp_id, env, condition, seed, episode_idx, hp_hash)``.
-Dédup inter-exp : si une ligne ``status='done'`` existe avec les 5 derniers
-champs identiques (tous ``exp_id`` confondus), un nouvel insert est marqué
-``skipped_dedup`` et les métriques sont recopiées. Garantit qu'un épisode
-physiquement déjà calculé n'est jamais refait.
+One row per evaluation episode, keyed by
+``(exp_id, env, condition, seed, episode_idx, hp_hash)``. Two experiments
+that ask for the same episode under the same configuration keep separate
+rows but share the computation: the second is marked ``skipped_dedup`` and
+copies the first one's metrics. Episodes are expensive, so an episode that
+has physically been computed is never computed twice.
 
-Lock : ``BEGIN IMMEDIATE`` → plusieurs workers / gits séparés peuvent partager
-le même ``registry.db`` sans double-lancement.
+Concurrency: writes go through ``BEGIN IMMEDIATE`` and the database runs
+in WAL mode, so several workers can share one ``registry.db`` without
+claiming the same atom.
+
+The design principle throughout is that a measured result is not
+destroyed. A row that reached ``done`` with a reward cannot be demoted, by
+a Python guard and by a database trigger, because the usual way to lose
+results is a retry that fails and overwrites the run that had succeeded.
 """
 from __future__ import annotations
 
@@ -23,8 +30,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-# Base schema: new DBs get the full schema; older DBs get the ALTER TABLE
-# migrations that follow.
+# Base schema, runs table only. A fresh database gets it in full; an
+# existing one is brought up to date by the ALTER TABLE migrations below.
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS runs (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,19 +66,17 @@ CREATE INDEX IF NOT EXISTS idx_pending   ON runs (status);
 CREATE INDEX IF NOT EXISTS idx_exp       ON runs (exp_id);
 """
 
-# Schema additions that depend on columns introduced by ALTER TABLE
-# migrations. Executed AFTER the migrations so they don't fail on a
-# older database that does not have last_heartbeat_at yet.
+# Schema objects that reference columns added by the migrations. Kept
+# separate and executed after them, because an index or trigger naming a
+# column that does not exist yet aborts the whole script.
 POST_MIGRATION_SQL = """
 CREATE INDEX IF NOT EXISTS idx_heartbeat ON runs (status, last_heartbeat_at);
 
--- TRIGGER prevent_done_overwrite
--- A row that reached `done` with a valid (non-NULL) reward represents
--- a measured experiment result and MUST NEVER be silently demoted. The
--- ``mark_failure`` Python guard already enforces this, but the DB
--- trigger turns the invariant into an unbreakable contract regardless
--- of which client writes (CLI, ad-hoc SQL, future wrappers).  Any
--- demote attempt aborts with sqlite3.IntegrityError.
+-- A row that reached `done` with a non-NULL reward holds a measured
+-- result and must not be demoted. The ``mark_failure`` guard in Python
+-- already refuses to, but the trigger makes the invariant hold for every
+-- writer, including ad-hoc SQL run by hand against the database. A
+-- demotion attempt aborts with sqlite3.IntegrityError.
 CREATE TRIGGER IF NOT EXISTS prevent_done_overwrite
 BEFORE UPDATE OF status ON runs
 WHEN OLD.status='done' AND OLD.reward IS NOT NULL
@@ -80,11 +85,10 @@ BEGIN
   SELECT RAISE(ABORT, 'cannot demote a done row with reward to non-done status');
 END;
 
--- Append-only audit log of run transitions. Forensique
--- pour comprendre comment un atome a évolué sans avoir à scanner les
--- launch.log. NEVER updated/deleted under normal operation. Heartbeat
--- ticks are NOT logged here (too frequent, would pollute the table)
--- — only state transitions are.
+-- Append-only audit log of state transitions, so the history of an atom
+-- can be reconstructed without reading the launcher logs. Never updated
+-- or deleted in normal operation. Heartbeat ticks are excluded: they are
+-- frequent enough to bury the transitions they would sit among.
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id      INTEGER NOT NULL,
@@ -99,14 +103,11 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_run ON events (run_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type, event_ts);
 
--- View `latest_result`: single source of truth for
--- downstream analyses (plot scripts, paper exports, win-rate
--- aggregations). For each (exp_id, env, condition, seed, ep), it
--- exposes exactly ONE row : the most recent ``done`` attempt with a
--- valid reward. Eliminates the "did I remember to dedup?" foot-gun
--- across all analysis code — `SELECT * FROM latest_result` is now
--- the authoritative read path.
-DROP VIEW IF EXISTS latest_result;
+-- Read path for every downstream analysis (plots, exports, aggregates).
+-- For each (exp_id, env, condition, seed, episode) it exposes exactly one
+-- row, the most recent ``done`` attempt carrying a reward. Reading the
+-- runs table directly double-counts episodes that were re-run under a
+-- second hp_hash, which is why analyses select from this view instead.
 CREATE VIEW IF NOT EXISTS latest_result AS
 SELECT
     r1.id,
@@ -131,23 +132,27 @@ WHERE r1.status = 'done' AND r1.reward IS NOT NULL
 
 VALID_STATUSES = {
     "pending", "running", "done", "failed", "rate_limited", "skipped_dedup",
-    # Distinct status for SIGTERM/SIGKILL (returncode -9/-15), so code
-    # crashes can be distinguished from external interruptions.
+    # Reserved for external termination (SIGTERM/SIGKILL). Retried exactly
+    # like `failed`, but kept apart from it so that the failure rate of the
+    # generated models can be measured without counting processes that
+    # were killed to restart a worker.
     "interrupted",
 }
 
 
 class Registry:
+    """Handle on the run database. Creating one migrates the schema."""
+
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
-            # 1) Base schema (no-op on existing DB)
+            # Ordering matters: base schema, then column migrations, then
+            # the objects that reference the migrated columns.
             c.executescript(SCHEMA_SQL)
             self._migrate_likelihood_column(c)
-            # 2) Additive migrations: ALTER TABLE for columns added
-            #    after initial schema. SQLite has no ``IF NOT EXISTS``
-            #    for ALTER, so we wrap in try/except.
+            # SQLite has no IF NOT EXISTS for ALTER TABLE, so re-adding an
+            # existing column is caught rather than tested for.
             for stmt in (
                 "ALTER TABLE runs ADD COLUMN last_heartbeat_at TEXT",
             ):
@@ -155,7 +160,6 @@ class Registry:
                     c.execute(stmt)
                 except sqlite3.OperationalError:
                     pass  # column already present
-            # 3) Schema additions that depend on the migrated columns
             c.executescript(POST_MIGRATION_SQL)
 
     # ------------------------------------------------------------------
@@ -178,6 +182,12 @@ class Registry:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Open a short-lived connection with autocommit and WAL enabled.
+
+        Connections are per-call rather than cached, so the object can be
+        shared across processes: an inherited SQLite handle is not safe to
+        use after a fork.
+        """
         conn = sqlite3.connect(
             self.db_path, timeout=30.0, isolation_level=None
         )
@@ -191,7 +201,12 @@ class Registry:
 
     @contextmanager
     def _immediate(self) -> Iterator[sqlite3.Connection]:
-        """Write transaction : BEGIN IMMEDIATE pour verrou cross-process."""
+        """Write transaction holding the database lock for its duration.
+
+        ``BEGIN IMMEDIATE`` takes the write lock up front instead of on
+        first write, which is what makes read-then-write sequences such as
+        claiming a row atomic between processes.
+        """
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE;")
             try:
@@ -210,11 +225,11 @@ class Registry:
     ) -> None:
         """Append a row to the audit ``events`` table.
 
-        Best-effort: if the events table is missing in an old DB or the
-        insert fails for any reason, we swallow
-        the exception silently. The audit log is observability, not
-        ground truth — a transition that didn't make it to ``events``
-        is still recorded by the ``runs.status`` change itself.
+        Best-effort by design: a failed insert is swallowed. The audit log
+        is observability, not ground truth, and the transition it records
+        is already carried by the ``runs.status`` change in the same
+        transaction. Letting it raise would abort a state change that
+        succeeded.
         """
         try:
             conn.execute(
@@ -247,7 +262,11 @@ class Registry:
         llm_model: Optional[str],
         overrides: Dict[str, Any],
     ) -> int:
-        """Insère une ligne `pending` (ou la retourne si déjà présente)."""
+        """Insert a ``pending`` row, or return the id of the existing one.
+
+        Idempotent, which is what makes re-running a command a resume:
+        atoms that were already recorded keep their row and their status.
+        """
         with self._immediate() as conn:
             row = conn.execute(
                 "SELECT id FROM runs WHERE exp_id=? AND env=? AND condition=? "
@@ -273,7 +292,12 @@ class Registry:
             return new_id
 
     def try_claim(self, run_id: int, hostname: str, git_sha: str) -> bool:
-        """Passe `pending` → `running` atomiquement. Retourne False si déjà pris."""
+        """Move a row from ``pending`` to ``running``.
+
+        Returns False when the row was not pending, which means another
+        worker claimed it first. The status test is part of the UPDATE, so
+        two workers cannot both succeed.
+        """
         with self._immediate() as conn:
             cur = conn.execute(
                 "UPDATE runs SET status='running', started_at=?, hostname=?, "
@@ -297,15 +321,17 @@ class Registry:
         hp_hash: str,
         llm_model: Optional[str] = None,
     ) -> Optional[sqlite3.Row]:
-        """Cherche une ligne `done` ou `skipped_dedup` avec mêmes champs.
+        """Find an already-computed episode this atom can reuse.
 
-        ``skipped_dedup`` contient les metrics recopiées d'une source `done`
-        d'une session antérieure, donc elles sont ré-utilisables pour une
-        nouvelle dedup.
+        ``skipped_dedup`` rows are accepted as sources as well as ``done``
+        ones, since they carry the metrics copied from an earlier source
+        and are equally valid.
 
-        The ``llm_model`` filter prevents E4 atoms with different LLMs
-        from being skip-deduped against each other. When ``llm_model`` is
-        None (legacy callers), the filter is skipped.
+        ``llm_model`` must be passed for any LLM condition: it is not part
+        of ``hp_hash``, so without the filter an episode produced by one
+        model would be reused for an atom that asked for another. It is
+        optional because rows written before the column was populated hold
+        NULL, and those are treated as matching anything.
         """
         sql = (
             "SELECT * FROM runs WHERE env=? AND condition=? AND seed=? "
@@ -314,8 +340,6 @@ class Registry:
         )
         params: tuple = (env, condition, seed, episode_idx, hp_hash)
         if llm_model is not None:
-            # Match exact llm_model OR legacy NULL rows. Treat NULL as
-            # "matches anything" for backward-compat with old runs.
             sql += "AND (llm_model = ? OR llm_model IS NULL) "
             params = params + (llm_model,)
         sql += "LIMIT 1"
@@ -323,6 +347,12 @@ class Registry:
             return conn.execute(sql, params).fetchone()
 
     def mark_dedup(self, run_id: int, source: sqlite3.Row) -> None:
+        """Record that this atom reuses ``source``, copying its metrics.
+
+        The metrics are duplicated rather than referenced so that every
+        experiment can be queried on its own rows, without joining back to
+        whichever experiment happened to run the episode first.
+        """
         with self._immediate() as conn:
             conn.execute(
                 "UPDATE runs SET status='skipped_dedup', reward=?, success=?, "
@@ -356,12 +386,14 @@ class Registry:
         wall_seconds: float,
         output_dir: str,
     ) -> None:
+        """Record a completed episode.
+
+        Keeps the better of the old and new reward when the row is already
+        done. A retry that reruns an episode and fails still produces a
+        nominal reward, so without this the retry of a successful episode
+        would replace it with the failure.
+        """
         with self._immediate() as conn:
-            # Anti-regression: if the row is already `done` with a strictly
-            # higher reward, KEEP the old result. This prevents a retry with
-            # a worse outcome (e.g. ép 0 success replaced by ép 0 retry
-            # failure that produced a nominal reward of 0) from clobbering
-            # the better historical run.
             existing = conn.execute(
                 "SELECT status, reward FROM runs WHERE id=?", (run_id,)
             ).fetchone()
@@ -397,11 +429,17 @@ class Registry:
     def mark_failure(
         self, run_id: int, *, status: str, error: str,
     ) -> None:
+        """Record a non-completion, unless the row already holds a result.
+
+        The guard matters because failures are marked per group: when a
+        group is retried and its subprocess dies, every atom of the group
+        is marked failed, including those whose episode had already
+        succeeded in an earlier attempt. Without the refusal, retrying a
+        partially successful group destroys the part that worked.
+        """
         if status not in VALID_STATUSES:
             raise ValueError(f"Invalid status {status!r}")
         with self._immediate() as conn:
-            # Critical anti-overwrite: a row that is already `done` with a
-            # valid reward must never be demoted to `failed` / `rate_limited`.
             existing = conn.execute(
                 "SELECT status, reward FROM runs WHERE id=?", (run_id,)
             ).fetchone()
@@ -428,11 +466,11 @@ class Registry:
     # Queries
     # ------------------------------------------------------------------
     def list_pending(self, exp_id: Optional[str] = None) -> List[sqlite3.Row]:
-        # `interrupted` rows are workers that were SIGTERM/SIGKILL'd
-        # (returncode -9/-15) — they had not finished their atom and
-        # need a clean retry, identical semantics to `failed` /
-        # `rate_limited` for the wrapper but distinguishable in
-        # diagnostics.
+        """Return every row that still needs to be run.
+
+        The four retryable statuses differ in diagnosis, not in what has
+        to happen next: none of them produced an episode.
+        """
         retryable = "('pending','failed','rate_limited','interrupted')"
         with self._conn() as conn:
             if exp_id is None:
@@ -445,6 +483,7 @@ class Registry:
             ))
 
     def status_counts(self, exp_id: Optional[str] = None) -> Dict[str, int]:
+        """Count rows per status, over one experiment or over all of them."""
         q = (
             "SELECT status, COUNT(*) AS n FROM runs "
             + ("WHERE exp_id=? " if exp_id else "")
@@ -455,18 +494,16 @@ class Registry:
             return {r["status"]: int(r["n"]) for r in conn.execute(q, args)}
 
     def heartbeat(self, run_id: int) -> bool:
-        """Update ``last_heartbeat_at`` for a running row.
+        """Refresh ``last_heartbeat_at`` on a running row.
 
-        Workers are expected to call this every ~30s while their atom
-        runs. The reaper (:meth:`reset_stale_heartbeat`) uses the gap
-        between ``now()`` and ``last_heartbeat_at`` to detect SIGKILL'd
-        workers without the wide ``max_age_hours`` time-since-claim
-        bucket — a short-running atom can finish in 5 min, so a 2h
-        cliff would let a true zombie hold its claim for hours.
+        Workers call this about every 30 seconds. It gives
+        :meth:`reset_stale_heartbeat` a signal of liveness rather than of
+        elapsed time: run durations vary from minutes to hours, so no
+        single age threshold separates a healthy long run from a dead one,
+        while silence does.
 
-        Returns False if the row is no longer ``running`` (likely
-        because the reaper already re-queued it) — caller should stop
-        the worker for this atom in that case.
+        Returns False when the row is no longer running, typically because
+        the reaper already re-queued it.
         """
         with self._immediate() as conn:
             cur = conn.execute(
@@ -481,18 +518,16 @@ class Registry:
         max_silence_minutes: float = 10.0,
         target_status: str = "interrupted",
     ) -> int:
-        """Reaper for ``running`` rows whose worker stopped heartbeating.
+        """Re-queue ``running`` rows whose worker stopped heartbeating.
 
-        Sharper than ``reset_stale_running`` because it tracks the
-        worker's last sign of life rather than the wall time since
-        claim. A 10-min silence is the default — a healthy worker
-        heartbeats every 30s so 10 min of silence = either crash,
-        SIGKILL, OOM, network partition, or process suspension.
+        Preferred over :meth:`reset_stale_running`, which can only ask how
+        long ago a row was claimed. A worker beats every 30 seconds, so
+        ten minutes of silence means it is gone, whatever the expected
+        duration of the atom.
 
-        Marks reaped rows as ``interrupted`` (default) so we can tell
-        them apart from rows that were genuinely re-queued for retry.
-        Set ``target_status='pending'`` to re-queue silently in the
-        legacy way (no diagnostic).
+        Reaped rows are marked ``interrupted`` so they remain
+        distinguishable from rows that failed on their own;
+        ``target_status='pending'`` re-queues them without that trace.
         """
         if target_status not in VALID_STATUSES:
             raise ValueError(f"Invalid target_status {target_status!r}")
@@ -515,11 +550,13 @@ class Registry:
         self, exp_id_prefix: Optional[str] = None,
         max_age_hours: float = 2.0,
     ) -> int:
-        """Resync les rows 'running' anciennes (zombies de workers tués) → 'pending'.
+        """Re-queue ``running`` rows claimed more than ``max_age_hours`` ago.
 
-        Robuste à un crash/SIGKILL : si un worker est tué SIGKILL, sa row reste
-        en 'running' indéfiniment. Cette fonction remet en 'pending' les rows
-        running plus vieilles que ``max_age_hours``.
+        A killed worker leaves its rows claimed forever, and nothing else
+        will ever pick them up. This is the age-based fallback for rows
+        that predate heartbeats or were never heartbeaten; prefer
+        :meth:`reset_stale_heartbeat`, which does not have to guess how
+        long an atom should take.
         """
         q = (
             "UPDATE runs SET status='pending', started_at=NULL "
@@ -536,29 +573,27 @@ class Registry:
     def dedup_pending_against_done(
         self, exp_id_prefix: Optional[str] = None,
     ) -> int:
-        """Marque les rows ``pending``/``failed``/``rate_limited`` en
-        ``skipped_dedup`` quand un sibling ``done`` (avec ``reward IS NOT NULL``)
-        existe pour les MÊMES ``(exp_id, env, condition, seed, episode_idx)``,
-        **quel que soit le ``hp_hash``**.
+        """Retire retryable rows whose episode already exists under another hash.
 
-        Pourquoi c'est nécessaire alors que le schéma a déjà ``UNIQUE
-        (exp_id, env, condition, seed, episode_idx, hp_hash)`` :
-            la contrainte UNIQUE inclut ``hp_hash``. Quand le yaml config
-            évolue entre deux sessions (kernel_bandwidth, sigma, etc.), le
-            ``hp_hash`` change et SQLite autorise un nouvel ``upsert_pending``
-            pour le même ep_seed (même `(env, condition, seed, ep)`). Sans ce
-            cleanup, la nouvelle row ``pending`` reste pickable par
-            ``list_pending`` → un worker la claim, exécute le run en entier,
-            puis le ``find_dedup_source`` de fin recopie les métriques ↦
-            CPU gaspillé pour rien.
+        Marks ``pending`` / ``failed`` / ``rate_limited`` rows as
+        ``skipped_dedup`` when a ``done`` sibling with a reward exists for
+        the same ``(exp_id, env, condition, seed, episode_idx)``,
+        **whatever its hp_hash**.
 
-        Exécutée au démarrage du wrapper, elle ramasse aussi les pending
-        orphelins laissés par un ancien `reset_stale_running` qui aurait
-        repassé en ``pending`` une row déjà couverte par un done sibling
-        d'un autre ``hp_hash``.
+        This is deliberately looser than the uniqueness constraint, which
+        includes ``hp_hash``. Editing a config changes the hash, so the
+        same episode can legitimately be inserted again under a new one.
+        Those rows are then indistinguishable from real work: a worker
+        claims one, runs the whole episode, and only at the end does the
+        dedup check find the earlier result and copy it. The episode was
+        recomputed for nothing. Calling this before a campaign starts
+        collapses that class of rows up front.
+
+        Also catches rows re-queued by :meth:`reset_stale_running` that
+        are covered by a done sibling under a different hash.
 
         Returns:
-            Nombre de rows mises à jour. Idempotente (rerun = 0 row).
+            Number of rows updated. Idempotent: a second call returns 0.
         """
         with self._immediate() as conn:
             # Build LIKE filter for exp_id_prefix (no SQL injection: only
@@ -626,6 +661,12 @@ class Registry:
     def fetch_metrics(
         self, exp_id: Optional[str] = None,
     ) -> List[sqlite3.Row]:
+        """Return every row that carries metrics, including deduplicated ones.
+
+        This can return several rows for one episode when it was re-run
+        under different hashes. Use :meth:`fetch_latest_results` for
+        anything that averages or counts.
+        """
         q = (
             "SELECT * FROM runs WHERE status IN ('done','skipped_dedup') "
             + ("AND exp_id=? " if exp_id else "")
@@ -642,13 +683,13 @@ class Registry:
     ) -> List[sqlite3.Row]:
         """Return the deduplicated latest-done row for each ep_seed.
 
-        Reads from the ``latest_result`` view, which guarantees ≤ 1 row
-        per (exp_id, env, condition, seed, episode_idx). Use this for
-        ALL downstream analyses (paper plots, win-rate stats, latex
-        export) — it eliminates the foot-gun of double-counting rows
-        that have multiple ``done`` siblings under different hp_hashes.
+        Reads the ``latest_result`` view, which holds at most one row per
+        (exp_id, env, condition, seed, episode_idx). This is the intended
+        entry point for every analysis that aggregates results: querying
+        the runs table directly double-counts episodes that have several
+        ``done`` rows under different hashes.
 
-        Filter by exact ``exp_id`` or ``exp_id_prefix`` (LIKE 'X%').
+        Filter by exact ``exp_id`` or by ``exp_id_prefix``.
         """
         if exp_id and exp_id_prefix:
             raise ValueError("Use either exp_id or exp_id_prefix, not both")
@@ -670,10 +711,11 @@ class Registry:
         event_type: Optional[str] = None,
         limit: int = 100,
     ) -> List[sqlite3.Row]:
-        """Read the audit log. Useful for forensique post-incident.
+        """Read the audit log, most recent first.
 
-        ``fetch_events(run_id=42)``      → all events for that run
-        ``fetch_events(event_type='failed', limit=10)`` → 10 last failures
+        ``fetch_events(run_id=42)`` returns the history of one run;
+        ``fetch_events(event_type='failed', limit=10)`` the last ten
+        failures across the campaign.
         """
         clauses: List[str] = []
         args: List[Any] = []

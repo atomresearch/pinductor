@@ -1,0 +1,36 @@
+# condition=direct_llm_po env=unlock
+# Direct LLM: the model is asked for the next action, with no induced model, no
+# particle filter and no planner. It sees only its own partial observation, the
+# same demonstrations every other method reads, and the environment's API file.
+#
+# This is the ablation that separates the pipeline from the language model. It
+# is the partially observed half of the pair; its counterpart is
+# `direct_llm_fo/unlock.yaml`.
+#
+# The protocol matches the other conditions on this environment.
+
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 40
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+env_name: &env_name "MyUnlockEnv-v0"
+actions: &actions [0, 1, 2, 3, 4, 5]
+
+env:
+  _target_: uncertain_worms.environments.minigrid.minigrid_env.MinigridEnvironment
+  env_name: ${env_name}
+  fully_obs: false
+
+agent:
+  _target_: uncertain_worms.policies.direct_llm_po_agent.DirectLLMPartiallyObsPolicy
+  env_code_path: environments/minigrid
+  dataset_path: "environments/minigrid/trajectory_data/MyUnlockEnv-v0_paper_N10.pkl"
+  actions: *actions
+  fully_obs: false

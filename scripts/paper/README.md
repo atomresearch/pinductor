@@ -17,12 +17,12 @@ scripts/paper/
 ├── cost.py               # Per-model price table + estimate_cost_usd
 ├── build_configs.py      # Pipeline that generated configs/*.yaml from upstream templates (templates not shipped — see configs/README.md)
 ├── regenerate_datasets.py# Slice _pure_mixed.pkl → _paper_N{1..12}.pkl mirrored to curtis_baseline/
-├── configs/              # Self-contained Hydra YAMLs (6 conditions × 7 envs = 42 files)
+├── configs/              # Self-contained Hydra YAMLs (8 conditions, 82 files; see configs/README.md)
 ├── tests/                # Unit suites (no API key, < 30s total)
-├── plot_pretty.py        # E1 main bars (Fig. 2) + E2b stochastic robustness
-├── plot_e2_full_sweep.py # E2 offline sweep (Fig. 4)
+├── plot_pretty.py        # E2 offline sweep and E4 panels
+├── plot_e2_full_sweep.py # E2 offline sweep
 ├── plot_progression.py   # E2 online learning curves
-└── plot_e4_3llms.py      # E4 LLM ablation (Tab. 1)
+└── plot_e4_3llms.py      # E4 LLM ablation
 ```
 
 ## CLI reference

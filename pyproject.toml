@@ -13,8 +13,9 @@ description = "Pinductor: LLM-guided POMDP world-model induction from observatio
 dependencies = [
     "numpy==1.26.4",
     "scipy>=1.10.0",
-    "gymnasium==0.28.1",
+    "gymnasium==0.29.1",
     "minigrid==2.3.1",
+    "popgym==1.0.7",
     "matplotlib>=3.9.2",
     "imageio>=2.35.1",
     "python-dotenv==1.0.1",
@@ -37,6 +38,40 @@ dependencies = [
 fast = ["numba>=0.59"]
 # Optional: tueplots gives the paper-style plot bundle used to render figures.
 plots = ["tueplots>=0.0.18"]
+# Optional: the DreamerV3 baselines under baselines/. The two arms cannot share
+# one environment: the PyTorch one needs gym 0.22, while the JAX one needs 0.25,
+# whose gym.make imports the module named before the colon in an environment id
+# — which is how its bridge registers. Hence two extras, installed separately.
+# Upstream's requirements also pin mujoco, dm_control, crafter and opencv for
+# benchmark suites none of our bridges reach; those are left out.
+dreamer-torch = [
+    # ruamel.yaml is pinned, not lower-bounded: 0.19 removed safe_load, which
+    # dreamer.py calls, so an open bound resolves to a version that breaks the
+    # baseline on a clean install. This is the version upstream pins.
+    "gym==0.22.0", "ruamel.yaml==0.17.4", "einops>=0.3.0", "moviepy>=1.0.3",
+]
+# jax carries no accelerator extra here: install the wheel matching your
+# hardware, or keep the CPU one and pass --jax.platform cpu, as the paper did.
+# `embodied` is vendored in the tree rather than installed.
+dreamer-jax = [
+    "gym==0.25.2", "ruamel.yaml==0.17.4", "einops>=0.3.0",
+    "jax==0.4.33", "elements>=3.19.1", "ninjax>=3.5.1", "portal>=3.5.0",
+    "optax", "chex", "scope>=0.4.4",
+]
+# Optional: the OpenVLA baseline under baselines/openvla/. transformers and timm
+# are pinned because OpenVLA-7B is loaded with trust_remote_code and its custom
+# classes do not survive a newer transformers; these are the versions the paper's
+# run used. torch is deliberately absent: the base dependencies already pin it,
+# and the paper's run was on a ROCm wheel that pip cannot select on its own —
+# install the wheel matching your accelerator first if you are not on CUDA.
+vla = [
+    "transformers==4.40.1",
+    "tokenizers==0.19.1",
+    "timm==0.9.10",
+    "peft==0.11.1",
+    "accelerate>=0.30",
+    "safetensors>=0.4",
+]
 dev = [
     "black==23.9.1",
     "docformatter==1.7.5",

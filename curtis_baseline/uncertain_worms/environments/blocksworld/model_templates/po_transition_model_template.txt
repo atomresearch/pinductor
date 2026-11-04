@@ -1,0 +1,5 @@
+def transition_func(state, action):
+    """Return the next BlocksState after applying ``action`` (0,1,2,3) to
+    ``state``. Infer the exact effect of each action from the demonstrations.
+    Do NOT mutate ``state``; return a NEW BlocksState."""
+    pass

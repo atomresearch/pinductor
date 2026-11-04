@@ -4,12 +4,12 @@ Three modules:
 
 * :mod:`~particle_filtering.get_score_metrics` — the
   :class:`~particle_filtering.get_score_metrics.LikelihoodEvaluator` class
-  implements the distance-kernel pseudo-likelihood (paper Eq. 7 / Eq. 8),
+  implements the distance-kernel pseudo-likelihood (paper Eq. 5 / Eq. 7),
   including bootstrap particle filtering with rejuvenation and the
   posterior expected log-likelihood used as the model-ranking score.
 
 * :mod:`~particle_filtering.model_disagreement` — Query-By-Committee vote
-  entropy (paper Eq. 9). Surfaces transition contexts where the candidate
+  entropy (paper Eq. 8). Surfaces transition contexts where the candidate
   pool disagrees, which are then fed back into the LLM refinement prompt.
 
 * :mod:`~particle_filtering.belief_quality_scorer` — *oracle* diagnostic

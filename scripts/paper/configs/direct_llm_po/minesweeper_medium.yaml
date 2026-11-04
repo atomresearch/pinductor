@@ -1,0 +1,52 @@
+# condition=direct_llm_po env=minesweeper_medium
+# Direct LLM: the model is asked for the next action, with no induced model, no
+# particle filter and no planner. It sees only its own partial observation, the
+# same demonstrations every other method reads, and the environment's API file.
+#
+# This is the ablation that separates the pipeline from the language model. It
+# is the partially observed half of the pair; its counterpart is
+# `direct_llm_fo/minesweeper_medium.yaml`.
+#
+# The protocol matches the other conditions on this environment.
+#
+# Derived from `minesweeper_easy.yaml`: only the step cap (30, the number of
+# safe cells, as in the Pinductor and POMDP Coder configs for this difficulty),
+# the action list (36 cells of the 6x6 board), and the names that
+# select the environment and its demonstrations change.
+
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 30
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+env_name: &env_name "MineSweeperMedium"
+actions: &actions [
+  0, 1, 2, 3, 4, 5, 6, 7,
+  8, 9, 10, 11, 12, 13, 14, 15,
+  16, 17, 18, 19, 20, 21, 22, 23,
+  24, 25, 26, 27, 28, 29, 30, 31,
+  32, 33, 34, 35
+]
+
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+
+agent:
+  _target_: uncertain_worms.policies.direct_llm_po_agent.DirectLLMPartiallyObsPolicy
+  env_code_path: environments/popgym
+  dataset_path: "environments/popgym/trajectory_data/MineSweeperMedium_random_N50.pkl"
+  actions: *actions
+  fully_obs: false

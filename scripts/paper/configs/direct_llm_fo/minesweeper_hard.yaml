@@ -1,0 +1,55 @@
+# condition=direct_llm_fo env=minesweeper_hard
+# Direct LLM: the model is asked for the next action, with no induced model, no
+# particle filter and no planner. It sees the true state, the same
+# demonstrations every other method reads, and the environment's API file.
+#
+# This is the ablation that separates the pipeline from the language model. It
+# is the fully observed half of the pair; its counterpart is
+# `direct_llm_po/minesweeper_hard.yaml`.
+#
+# The protocol matches the other conditions on this environment.
+#
+# Derived from `minesweeper_easy.yaml`: only the step cap (54, the number of
+# safe cells, as in the Pinductor and POMDP Coder configs for this difficulty),
+# the action list (64 cells of the 8x8 board), and the names that
+# select the environment and its demonstrations change.
+
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 54
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+env_name: &env_name "MineSweeperHard"
+actions: &actions [
+  0, 1, 2, 3, 4, 5, 6, 7,
+  8, 9, 10, 11, 12, 13, 14, 15,
+  16, 17, 18, 19, 20, 21, 22, 23,
+  24, 25, 26, 27, 28, 29, 30, 31,
+  32, 33, 34, 35, 36, 37, 38, 39,
+  40, 41, 42, 43, 44, 45, 46, 47,
+  48, 49, 50, 51, 52, 53, 54, 55,
+  56, 57, 58, 59, 60, 61, 62, 63
+]
+
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+
+agent:
+  _target_: uncertain_worms.policies.direct_llm_fo_agent.DirectLLMFullyObsPolicy
+  env_code_path: environments/popgym
+  dataset_path: "environments/popgym/trajectory_data/MineSweeperHard_random_N50.pkl"
+  actions: *actions
+  fully_obs: true

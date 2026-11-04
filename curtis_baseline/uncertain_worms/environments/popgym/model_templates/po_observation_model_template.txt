@@ -1,0 +1,16 @@
+def observation_func(state, action, empty_obs):
+    """
+    Args:
+        state (PopGymState): hidden Markov state after transition.
+        action (int): previous action taken by the agent.
+        empty_obs (PopGymObservation): placeholder observation.
+    Returns:
+        obs (PopGymObservation): observation emitted to the agent.
+
+    Return syntax:
+        return PopGymObservation(value=freeze_value(...))
+
+    Do not return raw tuples/lists/dicts directly; wrap them in
+    PopGymObservation.
+    """
+    raise NotImplementedError

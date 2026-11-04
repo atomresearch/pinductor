@@ -1,0 +1,105 @@
+# condition=ours env=blocks
+# Pinductor on Blocks, the paper's non-navigation domain: a gripper rearranges
+# stacks of numbered blocks and sees only the column it stands on, so nothing
+# about it is a grid.
+#
+# The protocol differs from the MiniGrid one and is stated here rather than
+# inferred: 120 steps and 3 episodes per seed, over 10 seeds, because a rand6
+# instance needs far more moves to solve than a 40-step gridworld. The reported
+# Blocks number is the mean over those 30 episodes.
+#
+# The planner settings below are the ones the reported run used, and they are
+# not the MiniGrid ones: a 20,000-node budget instead of 5,000, no entropy or
+# lambda term, a small action cost, and a QMDP cost-to-go heuristic. The
+# heuristic is derived ONLY from the models the planner currently holds — which
+# in this condition are induced — so it never reads ground-truth environment
+# code. Without it, belief-space A* on a 423,360-transition space with a sparse
+# terminal reward expands the shallowest node and never commits to a plan.
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 120
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+extras:
+  environment: blocks
+  approach: ours
+
+env_name: &env_name "Blocks-rand6-faithful-v0"
+actions: &actions [0, 1, 2, 3]
+instance: "rand6"
+cap: 6
+
+env:
+  _target_: uncertain_worms.environments.blocksworld.blocksworld_env.BlocksEnvironment
+  instance: ${instance}
+
+agent:
+  _target_: uncertain_worms.policies.partially_obs_planning_agent.LLMPartiallyObsPlanningAgent
+  max_attempts: 250000
+  num_particles: 100
+  num_model_attempts: 5
+  num_online_model_attempts: 5
+  fully_obs: false
+  env_name: *env_name
+  env_code_path: environments/blocksworld
+  actions: *actions
+  learn_transition: true
+  learn_initial: true
+  learn_reward: true
+  learn_observation: true
+  use_online: true
+  use_offline: true
+  # Candidate selection as in the paper: UCB1 over the pool, softmax at T = 0.1,
+  # no BALD exploration bonus. Same budget as the baseline it is compared to.
+  use_ucb1_selection: true
+  ucb1_c: 1.0
+  likelihood_softmax_temperature: 0.1
+  llm_provider: "openrouter"
+  dataset_path: "environments/blocksworld/trajectory_data/rand6_demos.pkl"
+  env_description: "A Blocks World manipulation task. A gripper moves along a row of columns; each column holds a vertical stack of distinct numbered blocks (bottom to top). The goal is to rearrange the blocks into a fixed target configuration; the task is solved the moment the stacks match the target and the gripper holds nothing. There are 4 actions: 0, 1, 2, 3. Two of them move the gripper between adjacent columns (left / right) and two manipulate blocks (pick up the top block of the current column / put the held block down on the current column). Work out the exact effect of each action - including when an action does nothing - from the demonstrations. The gripper observes ONLY the stack at its current column plus the block it is holding; it never sees its absolute column index or the other columns, and its starting column is unknown. Reward is sparse and terminal: +1.0 on the step that reaches the target configuration, 0.0 otherwise. Concretely, EACH EPISODE the 6 blocks (numbered 1..6) START in a FRESH RANDOM configuration: they are scattered uniformly at random across the 3 columns, in random stacking order (any arrangement of the 6 blocks over the 3 columns is possible), the gripper holds nothing, and the gripper's STARTING COLUMN is uniformly random in {0,1,2}. The TARGET configuration (fixed across episodes) is: column 0 = [1,2,3,4,5,6] (block 1 at bottom, then 2,3,4,5, and 6 on top) - i.e. the sorted tower - columns 1 and 2 empty. The initial-state model must reproduce this DISTRIBUTION: random stacks over the 3 columns each episode, random gripper column, fixed target."
+
+  empty_state:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_state_gen
+    instance: ${instance}
+
+  empty_observation:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+    cap: ${cap}
+
+  state_sampler:
+    _target_: uncertain_worms.environments.blocksworld.sample_state.make_blocks_state_sampler
+    reference_state:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_state_gen
+      instance: ${instance}
+
+  planner:
+    _target_: uncertain_worms.planners.PO_DAStar.PO_DAStar
+    actions: *actions
+    max_expansions: 20000
+    lambda_coeff: 0.0
+    entropy_coeff: 0.0
+    action_cost: 0.01
+    mi_bonus_coeff: 0.0
+
+    heuristic:
+      _target_: uncertain_worms.planners.model_qmdp_heuristic.ModelQMDPHeuristic
+      scale: 0.01
+
+    empty_observation:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+      cap: ${cap}
+
+    initial_model:
+      _target_: uncertain_worms.structs.empty_initial_model_gen
+    transition_model:
+      _target_: uncertain_worms.structs.empty_transition_model_gen
+    reward_model:
+      _target_: uncertain_worms.structs.empty_reward_model_gen
+    observation_model:
+      _target_: uncertain_worms.structs.empty_observation_model_gen

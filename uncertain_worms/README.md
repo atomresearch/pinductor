@@ -1,13 +1,14 @@
 # `uncertain_worms/` — Pinductor pipeline
 
 This package contains the **Pinductor** implementation: the LLM-guided
-POMDP induction agent, the MiniGrid environments it operates on, the
-belief-space planner, and the shared data structures plus utilities.
+POMDP induction agent, the environments it operates on (MiniGrid, Blocks
+World and PopGym MineSweeper), the belief-space planner, the recurrent PPO
+baseline, and the shared data structures plus utilities.
 
 The same package name (`uncertain_worms`) is reused by
 `curtis_baseline/uncertain_worms/` for the POMDP Coder baseline. The two
 implementations are kept side-by-side and disambiguated by the runner's
-working-directory switch (see top-level `README.md` §8).
+working-directory switch (see top-level `README.md` §7).
 
 ## Layout
 
@@ -19,7 +20,10 @@ uncertain_worms/
 ├── policies/             # Agent classes + LLM prompting helpers + REx tree
 ├── planners/             # Belief-space planner (PO_DAStar)
 └── environments/
-    └── minigrid/         # Custom MiniGrid environments and demo collection
+    ├── minigrid/         # Custom MiniGrid environments and demo collection
+    ├── blocksworld/      # Partially observable Blocks World + demonstrations
+    ├── popgym/           # PopGym wrapper (MineSweeper) + demonstrations
+    └── obs_encoding.py   # Fixed-length observation encoders (PPO, optimal)
 ```
 
 ## Reading order for new contributors

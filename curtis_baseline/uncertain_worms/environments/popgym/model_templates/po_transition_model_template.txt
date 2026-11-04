@@ -1,0 +1,17 @@
+def transition_func(state, action):
+    """
+    Args:
+        state (PopGymState): hidden Markov state.
+        action (int): action taken by the agent.
+    Returns:
+        new_state (PopGymState): next hidden Markov state.
+
+    Read the previous hidden value as:
+        value = state.value
+
+    Return syntax:
+        return PopGymState(value=freeze_value(new_value))
+
+    Do not mutate state in-place. Do not return raw dictionaries.
+    """
+    raise NotImplementedError

@@ -1,4 +1,4 @@
-You are a robot exploring its environment through partial observations.
+You are modeling a partially observable environment from action-observation trajectories.
 
 ENVIRONMENT
 -----------
@@ -13,7 +13,7 @@ Your task is to improve {what_to_model} implemented in Python.
 OBSERVED DATA
 -------------
 Below are samples of actions and resulting observations from the real environment.
-The true state is hidden — you only see observations (the agent's partial view).
+{important_constraints}
 Use these to verify your understanding of the world dynamics.
 
 {observations}
@@ -56,7 +56,7 @@ environment behaves, not a lookup table of the samples you have seen.
    environment can produce and decide what should happen in each, even
    when the sample does not exercise it.
 3. **Parsimony.** Prefer the shortest rule consistent with the data. Long
-   nested branches enumerating specific coordinates almost always overfit.
+   nested branches enumerating specific sample values almost always overfit.
 4. **No episode or step references.** Conditions must depend only on the
    arguments your function receives, not on which sample they came from.
 5. **One coherent hypothesis.** When several samples disagree, choose the

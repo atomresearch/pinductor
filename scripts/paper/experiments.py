@@ -1,9 +1,19 @@
-"""Définition des expériences papier.
+"""Declarative definition of the experiments reported in the paper.
 
-Chaque expérience produit une liste d'« atomes » = tuple
+An experiment expands into a flat list of *atoms*. One atom is one
+evaluation episode, identified by
 ``(exp_id, env, condition, seed, episode_idx, llm_model, extra_overrides)``.
-Le runner itère ces atomes, calcule leur ``hp_hash`` et les soumet au registre
-(avec dédup inter-exp).
+``paper_runner`` groups the atoms that share a launch configuration,
+resolves their Hydra overrides through ``hyperparams.resolve_overrides``,
+hashes the result into an ``hp_hash``, and submits them to the SQLite
+registry, which deduplicates identical atoms across experiments.
+
+Atom construction is pure data: it touches neither the filesystem nor the
+network, so ``paper_runner.py run <exp> --dry-run`` prints the exact plan
+without launching anything.
+
+Unless an experiment states otherwise, the protocol is 10 seeds x 3
+episodes = 30 evaluation episodes per (env, condition).
 """
 from __future__ import annotations
 
@@ -16,27 +26,33 @@ except ImportError:  # pragma: no cover - exercised by direct CLI usage
     from hyperparams import DEFAULT_LLM
 
 # ---------------------------------------------------------------------------
-# Constantes de protocole.
+# Protocol constants
 # ---------------------------------------------------------------------------
-SEEDS_DEFAULT: Sequence[int] = tuple(range(10))  # 10 seeds × 3 ep = 30 ep/condition
+SEEDS_DEFAULT: Sequence[int] = tuple(range(10))  # 10 seeds x 3 ep = 30 ep/condition
 EPISODES_PER_SEED = 3
 
 ENVS_E1 = ("lava", "four_rooms", "unlock", "corners")
-ENVS_PRIO = ("lava", "unlock")  # E2/E2b/E4 : prio lava+unlock
+ENVS_PRIO = ("lava", "unlock")  # subset used by E2 / E2b / E4
 
 E4_LLMS = (
-    # Petit baseline.
-    # qwen/qwen3-14b : 14B, thinking native, meme famille que baseline qwen3.6-plus
-    # Cap reasoning identique baseline via PAPER_REASONING_MAX_TOKENS=5000.
+    # Small tier: 14B with native thinking, same model family as the
+    # default LLM, so the comparison isolates model scale. Its reasoning
+    # budget is capped at the same value as the default through
+    # PAPER_REASONING_MAX_TOKENS=5000 (read by uncertain_worms/utils.py).
     "qwen/qwen3-14b",
-    # Frontier comparison model for E4 with the same reasoning budget
-    # as the baseline model.
+    # Frontier tier, same 5000-token reasoning budget for comparability.
+    # Provider pricing at the time of the runs was $5/M input and $25/M
+    # output tokens; the 60 atoms of this arm were budgeted at roughly
+    # $233 by extrapolating the token counts measured on the small tier.
     "anthropic/claude-opus-4.7",
 )
 
 _default_sweep = (2, 4, 6, 8, 10, 12)
-# Opt-in env override for E2_OFFLINE_SWEEP. Set
-# ``E2_OFFLINE_SWEEP_OVERRIDE=10,12`` to restrict.
+# Opt-in narrowing of the offline sweep without editing the default:
+# ``E2_OFFLINE_SWEEP_OVERRIDE=10,12`` restricts a run to those two demo
+# counts. A malformed value falls back to the full sweep instead of
+# aborting, so a bad env var cannot silently truncate a campaign to an
+# empty sweep.
 import os as _os
 _sweep_override = _os.environ.get("E2_OFFLINE_SWEEP_OVERRIDE", "").strip()
 if _sweep_override:
@@ -45,12 +61,22 @@ if _sweep_override:
     except ValueError:
         E2_OFFLINE_SWEEP = _default_sweep
 else:
-    E2_OFFLINE_SWEEP = _default_sweep  # N_D
+    E2_OFFLINE_SWEEP = _default_sweep  # N_D: number of offline demonstrations
+# Declared for reference: no code reads this tuple, since E2_online below
+# fixes M=5.
 E2_ONLINE_SWEEP = (1, 3, 5, 10)      # M (agent.num_model_attempts)
 
 
 @dataclass(frozen=True)
 class Atom:
+    """One evaluation episode of one experiment.
+
+    ``extra`` holds the free-form Hydra overrides that distinguish this
+    atom from the condition's frozen YAML defaults (for instance the
+    demonstration count swept by E2 offline). It is what makes two atoms
+    of the same (env, condition, seed, episode) hash differently.
+    """
+
     exp_id: str
     env: str
     condition: str
@@ -70,6 +96,11 @@ def _materialise(
     seeds: Sequence[int] = SEEDS_DEFAULT,
     episodes: int = EPISODES_PER_SEED,
 ) -> List[Atom]:
+    """Expand the cross-product (env x condition x seed x episode) into atoms.
+
+    Conditions that never call a language model carry ``llm_model=None``,
+    which keeps them out of the per-model dedup and cost accounting.
+    """
     atoms: List[Atom] = []
     for env in envs:
         for cond in conditions:
@@ -90,7 +121,7 @@ def _materialise(
 
 
 # ---------------------------------------------------------------------------
-# Expériences
+# Experiments
 # ---------------------------------------------------------------------------
 def E1(envs: Sequence[str] = ENVS_E1) -> List[Atom]:
     """E1 — Reward / Success Rate, 4 envs, 5 conditions."""
@@ -103,11 +134,19 @@ def E1(envs: Sequence[str] = ENVS_E1) -> List[Atom]:
 
 
 def E2_offline(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
+    """E2 offline — sample efficiency in the number of demonstrations N_D.
+
+    One sub-experiment per value of ``E2_OFFLINE_SWEEP``, each tagged with
+    its own ``exp_id`` (``E2_offline_ND<n>``) so the sweep points stay
+    separable in the registry.
+    """
     atoms: List[Atom] = []
     for n_d in E2_OFFLINE_SWEEP:
         if n_d == 5:
-            # 5 est le default E1 → dédup automatique, on génère quand même
-            # l'atome pour que le skipped_dedup soit tracé.
+            # No-op branch: a sweep point that duplicates an already-run
+            # configuration is still emitted as an atom, so the registry
+            # records it as skipped_dedup instead of leaving a hole in the
+            # sweep. Deduplication happens in the registry, not here.
             pass
         extra = {"agent.num_input_examples": int(n_d)}
         atoms.extend(_materialise(
@@ -120,10 +159,15 @@ def E2_offline(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
 
 
 def E2_online(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
-    """E2_online — K=10 episodes, M=5 attempts fixe, dataset offline N=2.
+    """E2 online — learning curve over K=10 episodes, M=5 attempts, N_D=2.
 
-    On lit ``result.json[rewards][k]`` pour tracer reward(k) k=0..9
-    (apprentissage online sur la duree). Pas de sweep M (peu d'info en plus).
+    The plotted curve is ``result.json["rewards"][k]`` for k = 0..9, that
+    is the reward of each successive episode within a single run, which is
+    what makes online model refinement visible. The attempt budget M is
+    held fixed rather than swept.
+
+    The 10 episodes belong to one subprocess, so ``episodes=10`` here also
+    forces ``num_episodes=10`` through ``extra``.
     """
     extra = {
         "agent.num_model_attempts": 5,
@@ -141,19 +185,25 @@ def E2_online(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
 
 
 def E2b_stochastic(envs: Sequence[str] = ("lava_stoch", "unlock_stoch")) -> List[Atom]:
-    """E2b — variantes stochastiques (agent+goal/dir random init à chaque reset).
+    """E2b — stochastic variants that re-randomise the layout on every reset.
 
-    Envs stoch disponibles (merge from upstream) :
-      - lava_stoch → MyMiniGrid-StochasticLavaWall-v0
-      - four_rooms_stoch → MyMiniGrid-StochasticFourRooms-v0
-      - unlock_stoch → MyMiniGrid-StochasticUnlock-v0
-    Priorité : lava+unlock.
+    In these environments the agent position, goal and direction are drawn
+    again at each reset, so a model that memorised one layout cannot carry
+    over. Three such environments exist (``lava_stoch``,
+    ``four_rooms_stoch``, ``unlock_stoch``); the paper reports the first
+    and the third.
     """
     conditions = ("curtis_their", "ours", "random", "tabular")
     return _materialise("E2b", envs, conditions)
 
 
 def E4_llm_variation(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
+    """E4 — the proposed method under a small and a frontier LLM.
+
+    The default LLM arm is not re-run here: its episodes already exist
+    under E1/E2 with an identical configuration, and the plotting script
+    reads them from there.
+    """
     atoms: List[Atom] = []
     for llm in E4_LLMS:
         atoms.extend(_materialise(
@@ -166,9 +216,10 @@ def E4_llm_variation(envs: Sequence[str] = ENVS_PRIO) -> List[Atom]:
 
 
 # ---------------------------------------------------------------------------
-# Registre
+# Experiment lookup table
 # ---------------------------------------------------------------------------
 def all_experiments() -> Dict[str, callable]:
+    """Map the experiment names accepted on the command line to builders."""
     return {
         "E1":          E1,
         "E2_offline":  E2_offline,
@@ -182,6 +233,11 @@ def build_atoms(
     exp_name: str,
     envs: Optional[Sequence[str]] = None,
 ) -> List[Atom]:
+    """Build the atoms of one experiment, or of every experiment for "all".
+
+    ``envs``, when given, replaces the experiment's own default
+    environment list; this is how ``--envs`` narrows a run.
+    """
     table = all_experiments()
     if exp_name == "all":
         out: List[Atom] = []
@@ -197,4 +253,5 @@ def build_atoms(
 
 
 def _slug(name: str) -> str:
+    """Turn a model id into an identifier safe for exp_ids and directory names."""
     return name.replace("/", "__").replace(".", "_").replace("-", "_")

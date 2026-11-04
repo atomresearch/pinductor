@@ -1,0 +1,5 @@
+change,n,exact_pct,ci95_pp,qualifier
+No ablation,50,36,13,
+Comments/docstrings removed,10,0,,but only reward fails: 70% are transition-exact
+Description to neutral sentence,10,10,19,only 30% executable
+Class names to generic,20,55,22,"overlaps baseline, so no effect detected"

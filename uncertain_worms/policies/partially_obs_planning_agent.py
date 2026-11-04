@@ -16,9 +16,9 @@ High-level pseudocode (paper §4, Algorithm 1)
     5.          m_jk  <- LLM(parent prompt + diagnostics)
     6.          S_jk, B_jk, D_jk <- ParticleFilterKernelScore(m_jk, D)
     7.          C  <- C ∪ {T^{m_jk}}                  # disagreement committee
-    8.          Q_jk <- QBCDisagreement(C, B_jk, D)   # vote entropy, Eq. 9
+    8.          Q_jk <- QBCDisagreement(C, B_jk, D)   # vote entropy, Eq. 8
     9.          pool <- pool ∪ {m_jk}
-    10. m*  <- softmax-sample from near-best set (Eq. 11–12)
+    10. m*  <- softmax-sample from near-best set (Eq. 17–18)
     11. return m*
 
 Mapping to code
@@ -31,15 +31,15 @@ Mapping to code
                                    Pinductor) or ``base_policy.requery``
                                    (per-component, POMDP Coder baseline)
 - Step 6 (Particle filter score)   :func:`particle_filtering.get_score_metrics
-                                   .LikelihoodEvaluator.evaluate_likelihood` (Eq. 7-8)
+                                   .LikelihoodEvaluator.evaluate_likelihood` (Eq. 5, 7)
 - Step 8 (QBC disagreement)        :func:`particle_filtering.model_disagreement
-                                   .committee_prediction_entropy` (Eq. 9)
+                                   .committee_prediction_entropy` (Eq. 8)
                                    + ``DisagreementDetector`` for per-context
                                    summaries fed back into the LLM prompt.
 - Step 10 (final selection)        Inline near-best softmax inside
                                    ``joint_update_models_rex`` (search for
                                    ``likelihood_softmax_temperature`` / ``near_best``).
-                                   Implements Eq. 11-12.
+                                   Implements Eq. 17-18.
 
 Online deployment loop
 ----------------------
@@ -49,11 +49,11 @@ filter forward at each step, and :meth:`get_action` queries the planner
 each episode, the new trajectory is appended to the replay buffer and a
 fresh REx round (Step 2) is triggered for online refinement.
 
-Hyperparameters (paper Table 1 / App. D)
+Hyperparameters (paper App. A.5)
 ----------------------------------------
-- ``kernel_bandwidth`` (κ, default 0.2) — distance-kernel sharpness
-- ``num_particles`` (K, default 10)     — belief size
-- ``num_model_attempts`` (M, default 5) — candidates per REx round
+- ``kernel_bandwidth`` (κ; 0.2 on MiniGrid, 1 on Blocks, 1e-3 on MineSweeper) — distance-kernel sharpness
+- ``num_particles`` (K; 10 on MiniGrid, 100 on Blocks, 80 on MineSweeper) — belief size
+- ``num_model_attempts`` (M; 5, or 2 on MineSweeper) — candidates per REx round
 - ``ucb1_c`` (c, default 1.0)           — UCB1 exploration constant
 - ``likelihood_softmax_temperature`` (T)      — final selection temperature
 - ``num_input_examples`` (N_D)          — number of offline trajectories
@@ -69,7 +69,7 @@ import random
 import traceback
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 from pyvis.network import Network  # type:ignore
@@ -290,10 +290,18 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         msc_weight: float = 0.0,
         scoring_mode: str = "energy",
         obs_noise_epsilon: float = 0.0,
+        condition_on_survival: bool = False,
+        min_unique_particles: int = 0,
+        mask_repeated_actions: bool = False,
         output_particle_distance_metrics: bool = False,
         model_averaging_top_k: int = 1,
         max_rejuvenation_attempts: int = 1000,
         qbc_max_particles_per_step: int = 10,
+        state_sampler: Optional[Callable[[], StateType]] = None,
+        use_systematic_resampling: bool = False,
+        ess_adaptive_rejuvenation: bool = False,
+        terminal_action_filter: bool = False,
+        terminal_action_filter_threshold: float = 0.5,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -309,7 +317,7 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         self.qbc_max_particles_per_step = int(qbc_max_particles_per_step)
         # Build an env-agnostic state sampler from the empty_state.
         # Works for any env that provides a valid empty_state.
-        self._state_sampler = self._make_state_sampler(empty_state)
+        self._state_sampler = state_sampler or self._make_state_sampler(empty_state)
         self.num_particles = num_particles
         self.num_initial_model_samples = num_initial_model_samples
         self.ground_truth_initial_model = ground_truth_initial_model
@@ -333,8 +341,17 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         self.msc_weight = msc_weight
         self.scoring_mode = scoring_mode
         self.obs_noise_epsilon = obs_noise_epsilon
+        self.condition_on_survival = condition_on_survival
+        self.min_unique_particles = max(
+            0, min(int(min_unique_particles), int(num_particles))
+        )
+        self.mask_repeated_actions = bool(mask_repeated_actions)
         self.output_particle_distance_metrics = output_particle_distance_metrics
         self.model_averaging_top_k = model_averaging_top_k
+        self.use_systematic_resampling = bool(use_systematic_resampling)
+        self.ess_adaptive_rejuvenation = bool(ess_adaptive_rejuvenation)
+        self.terminal_action_filter = bool(terminal_action_filter)
+        self.terminal_action_filter_threshold = float(terminal_action_filter_threshold)
 
     @staticmethod
     def _make_state_sampler(empty_state):
@@ -349,11 +366,46 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
                 make_minigrid_state_sampler,
             )
             return make_minigrid_state_sampler(empty_state)
+        if "PopGym" in cls_name:
+            from uncertain_worms.environments.popgym.sample_state import (
+                make_popgym_state_sampler,
+            )
+            return make_popgym_state_sampler(empty_state)
+        if "Blocks" in cls_name:
+            from uncertain_worms.environments.blocksworld.sample_state import (
+                make_blocks_state_sampler,
+            )
+
+            return make_blocks_state_sampler(empty_state)
         else:
             raise NotImplementedError(
                 f"No state sampler for {cls_name}. "
                 f"Implement one in the environment's package."
             )
+
+    @staticmethod
+    def _systematic_resample(states: List, weights: List[float], k: int) -> List:
+        """Systematic resampling: one random draw, N evenly-spaced strata.
+        Lower resampling variance than multinomial for the same particle count."""
+        if k == 0:
+            return []
+        total = sum(weights)
+        cdf: List[float] = []
+        cumsum = 0.0
+        for w in weights:
+            cumsum += w / total
+            cdf.append(cumsum)
+        if cdf:
+            cdf[-1] = 1.0  # guard against floating-point drift
+        u0 = random.random() / k
+        samples = []
+        i = 0
+        for j in range(k):
+            pos = u0 + j / k
+            while i < len(states) - 1 and cdf[i] < pos:
+                i += 1
+            samples.append(states[i])
+        return samples
 
     def _effective_bandwidth(self, obs: Optional[ObsType] = None) -> float:
         """Placeholder — adaptive bandwidth is computed inside update_belief."""
@@ -527,6 +579,7 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         observation_history: List[ObsType],
         action_history: List[ActType],
         *,
+        initial_observation: Optional[ObsType] = None,
         distance_threshold: float | None = None,
         kernel_bandwidth: float = 1.0,
     ) -> Tuple[Optional[ParticleBelief], Dict[str, str]]:
@@ -541,6 +594,10 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
 
         eps = self.obs_noise_epsilon  # E4 likelihood tempering
         weighted_particles: Dict[StateType, float] = {}
+        # Rejuvenation is budgeted per filtering update. A cumulative
+        # episode-level counter exhausts the budget after a few observations
+        # and prevents later beliefs from recovering from particle loss.
+        update_attempts = 0
 
         # ------------------------------------------------------------------ #
         # 1) Propagate existing particles and weight them                    #
@@ -555,12 +612,20 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
             # with the rest of the belief.
             propagated: list = []  # [(next_state, dist)]
             n_particle_errors = 0
+            n_survival_rejections = 0
             last_particle_error: Optional[str] = None
             for particle in current_belief.to_list():
                 try:
                     next_state = self.planner.transition_model(
                         particle.copy(), a_last
                     )
+                    if self.condition_on_survival:
+                        _, predicted_terminal = self.planner.reward_model(
+                            particle, a_last, next_state
+                        )
+                        if predicted_terminal:
+                            n_survival_rejections += 1
+                            continue
                     model_obs = self.planner.observation_model(
                         next_state.copy(), a_last, self.empty_observation
                     )
@@ -582,6 +647,12 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
                 # an error so the caller falls back to rejuvenation/random.
                 if not propagated and last_particle_error is not None:
                     return None, {"model": last_particle_error}
+
+            if n_survival_rejections > 0:
+                log.info(
+                    "[SURVIVAL] rejected %d propagated particles predicting termination",
+                    n_survival_rejections,
+                )
 
             # Adaptive bandwidth: tighten when distances vary across particles
             if self.adaptive_bandwidth and propagated:
@@ -620,14 +691,51 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         # ------------------------------------------------------------------ #
         # 2) Rejuvenate / initialise until we hit self.num_particles         #
         # ------------------------------------------------------------------ #
+        is_initializing = (
+            not current_belief
+            and initial_observation is not None
+            and not action_history
+        )
+        target_candidate_count = (
+            max(self.num_particles, int(self.num_initial_model_samples))
+            if is_initializing
+            else self.num_particles
+        )
         running_weight_sum = sum(weighted_particles.values())
+        n_rejuvenation_survival_rejections = 0
+
+        # A2: Compute ESS and determine adaptive rejuvenation budget.
+        # When ESS/N is low (particles have collapsed), we spend more attempts
+        # rejuvenating. Otherwise the budget is unchanged from max_attempts so
+        # that A2 is a strict improvement over the baseline (never reduces budget).
+        _rejuvenation_budget = self.max_attempts
+        if self.ess_adaptive_rejuvenation and weighted_particles and not is_initializing:
+            _w_vals = list(weighted_particles.values())
+            _w_sum = sum(_w_vals)
+            _w_sq = sum(w * w for w in _w_vals)
+            _ess = (_w_sum * _w_sum / _w_sq) if _w_sq > 0.0 else 0.0
+            _ess_ratio = _ess / max(self.num_particles, 1)
+            log.info("[ESS] ESS=%.1f ESS/N=%.3f n_particles=%d", _ess, _ess_ratio, self.num_particles)
+            if _ess_ratio < 0.1:
+                _rejuvenation_budget = self.max_attempts * 3
+            elif _ess_ratio < 0.3:
+                _rejuvenation_budget = self.max_attempts * 2
+            # else: budget stays at max_attempts — no change when ESS is healthy
+
         while (
-            running_weight_sum < self.num_particles
-            and self.num_attempts < self.max_attempts
+            (
+                len(weighted_particles) < target_candidate_count
+                if is_initializing
+                else (
+                    running_weight_sum < self.num_particles
+                    or len(weighted_particles) < self.min_unique_particles
+                )
+            )
+            and update_attempts < _rejuvenation_budget
         ):
-            self.num_attempts += 1
-            if self.num_attempts % 1000 == 0:
-                log.debug(f"Rejuvenation attempt {self.num_attempts}/{self.max_attempts}")
+            update_attempts += 1
+            if update_attempts % 1000 == 0:
+                log.debug(f"Rejuvenation attempt {update_attempts}/{_rejuvenation_budget}")
             try:
                 candidate = self.planner.initial_model(self.empty_state.copy())
             except Exception:
@@ -636,11 +744,35 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
             ok = True
             next_state = candidate
             total_dist = 0.0
+            if initial_observation is not None and not action_history:
+                try:
+                    initial_obs = self.planner.observation_model(
+                        next_state.copy(), None, self.empty_observation
+                    )
+                except Exception:
+                    ok = False
+                else:
+                    dist = initial_obs.distance_soft(initial_observation)
+                    if math.isinf(dist) or (
+                        distance_threshold is not None and dist > distance_threshold
+                    ):
+                        ok = False
+                    total_dist += dist
+
             for a, obs in zip(action_history, observation_history):
                 try:
+                    previous_state = next_state.copy()
                     next_state = self.planner.transition_model(
-                        next_state, a
+                        previous_state.copy(), a
                     )
+                    if self.condition_on_survival:
+                        _, predicted_terminal = self.planner.reward_model(
+                            previous_state, a, next_state
+                        )
+                        if predicted_terminal:
+                            n_rejuvenation_survival_rejections += 1
+                            ok = False
+                            break
                     cand_obs = self.planner.observation_model(
                         next_state, a, self.empty_observation
                     )
@@ -669,7 +801,15 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
                     )
                     running_weight_sum += w
 
-        log.info(f"Num attempts: {self.num_attempts}/{self.max_attempts}")
+        if n_rejuvenation_survival_rejections > 0:
+            log.info(
+                "[SURVIVAL] rejected %d rejuvenation candidates predicting termination",
+                n_rejuvenation_survival_rejections,
+            )
+
+        # Retain the public diagnostic attribute as the latest update's count.
+        self.num_attempts = update_attempts
+        log.info(f"Num attempts: {update_attempts}/{self.max_attempts}")
         log.info("Num valid initial particles: " + str(len(weighted_particles)))
 
         if not weighted_particles:
@@ -686,17 +826,66 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
 
         states = list(weighted_particles.keys())
         weights = [weighted_particles[s] for s in states]
-        sampled = random.choices(states, weights=weights, k=self.num_particles)
+        reserve_count = min(
+            self.min_unique_particles,
+            len(states),
+            self.num_particles,
+        )
+        reserved: List[StateType] = []
+        if reserve_count > 0:
+            remaining_states = list(states)
+            remaining_weights = list(weights)
+            for _ in range(reserve_count):
+                selected_index = random.choices(
+                    range(len(remaining_states)),
+                    weights=remaining_weights,
+                    k=1,
+                )[0]
+                reserved.append(remaining_states.pop(selected_index))
+                remaining_weights.pop(selected_index)
+
+        _remaining_k = self.num_particles - len(reserved)
+        if self.use_systematic_resampling and _remaining_k > 0:
+            sampled = reserved + self._systematic_resample(states, weights, _remaining_k)
+        else:
+            sampled = reserved + random.choices(
+                states,
+                weights=weights,
+                k=_remaining_k,
+            )
         int_particles: Dict[StateType, int] = Counter(sampled)
 
+        if reserved:
+            log.info(
+                "Reserved %d unique particles during resampling",
+                len(reserved),
+            )
         log.info("Num unique initial particles: " + str(len(int_particles)))
 
         new_belief = ParticleBelief[StateType, ObsType](particles=int_particles)
         return new_belief, {}
 
     def get_next_action(self, obs: Optional[ObsType]) -> ActType:
-        if obs is not None:
+        if obs is not None and self.action_hist:
             self.observation_hist.append(obs)
+
+        available_actions = list(self.actions)
+        if self.mask_repeated_actions:
+            used_actions = set(self.action_hist)
+            available_actions = [
+                action for action in self.actions if action not in used_actions
+            ]
+            if not available_actions:
+                available_actions = list(self.actions)
+                log.warning(
+                    "[ACTION_MASK] all actions exhausted; restoring full action set"
+                )
+            else:
+                log.info(
+                    "[ACTION_MASK] available=%d masked=%d",
+                    len(available_actions),
+                    len(self.actions) - len(available_actions),
+                )
 
         # Diagnostic: log RNG state hash and active transition model at step 0
         # to detect belief divergence caused by stochastic LLM code generation.
@@ -715,11 +904,12 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
             log.info("Initializing belief")
             belief, error = self.update_belief(
                 ParticleBelief(), observation_history=[], action_history=[],
+                initial_observation=obs,
                 kernel_bandwidth=eff_bw,
             )
             if belief is None:
                 log.info("Belief initialization error: " + str(error))
-                action = random.choice(self.actions)
+                action = random.choice(available_actions)
                 self.action_hist.append(action)
                 return action
             self.current_belief = belief
@@ -734,7 +924,7 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
             )
             if belief is None:
                 log.info("Belief update error: " + str(error))
-                action = random.choice(self.actions)
+                action = random.choice(available_actions)
                 self.action_hist.append(action)
                 return action
             self.current_belief = belief
@@ -742,6 +932,20 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
         # --- Belief diagnostic logging (opt-in via config) ---
         if getattr(self, "log_belief_diagnostics", False) and belief is not None:
             self._log_full_belief_diagnostic(belief)
+
+        # C2: Per-step belief entropy — always logged at INFO.
+        # Helps distinguish "flat belief (no learning)" from "focused belief".
+        if belief is not None and belief.particles:
+            _c2_total = sum(belief.particles.values())
+            if _c2_total > 0:
+                _c2_h = -sum(
+                    (c / _c2_total) * math.log(c / _c2_total)
+                    for c in belief.particles.values() if c > 0
+                )
+                log.info(
+                    "[C2_BELIEF_ENTROPY] step=%d H=%.3f nats unique=%d total=%d",
+                    self.steps_taken, _c2_h, len(belief.particles), _c2_total,
+                )
 
         steps_left = self.max_steps - self.steps_taken
 
@@ -759,7 +963,7 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
                     reward_variance_committee,
                 )
                 mi_bonus = {}
-                for a in self.actions:
+                for a in available_actions:
                     mi = mutual_information_committee(
                         qbc_candidates, belief, a
                     )
@@ -782,36 +986,99 @@ class PartiallyObsPlanningAgent(Policy[StateType, ActType, ObsType]):
             except Exception:
                 mi_bonus = None
 
-        if self.root_sampling_k > 0 and belief is not None and belief.particles:
-            # Root sampling (Silver & Veness 2010, POMCP):
-            votes: Counter = Counter()
-            for _ in range(self.root_sampling_k):
-                sampled_state = belief.sample()
-                delta_belief = ParticleBelief(particles={sampled_state: 1})
-                try:
-                    a, _ = self.planner.plan_next_action(
-                        delta_belief, max_steps=steps_left, mi_bonus=mi_bonus,
-                    )
-                    votes[a] += 1
-                except Exception:
-                    pass
-            if votes:
-                action = votes.most_common(1)[0][0]
+        # B1: Terminal probability action filter.
+        # For each candidate action, estimate P(terminal | a, belief) by running
+        # transition + reward models over all particles. Mask actions above threshold.
+        # Results are cached in _action_terminal_probs and reused by C1.
+        _action_terminal_probs: Dict[ActType, float] = {}
+        if self.terminal_action_filter and belief is not None and belief.particles:
+            _b1_total = sum(belief.particles.values())
+            for _b1_a in available_actions:
+                _b1_p = 0.0
+                for _b1_s, _b1_c in belief.particles.items():
+                    try:
+                        _b1_ns = self.planner.transition_model(_b1_s.copy(), _b1_a)
+                        _, _b1_term = self.planner.reward_model(_b1_s, _b1_a, _b1_ns)
+                        if _b1_term:
+                            _b1_p += _b1_c / _b1_total
+                    except Exception:
+                        pass
+                _action_terminal_probs[_b1_a] = _b1_p
                 log.info(
-                    f"[ROOT_SAMPLING] K={self.root_sampling_k} votes={dict(votes)} "
-                    f"selected={action}"
+                    "[B1_TERMINAL_FILTER] step=%d action=%s P(term)=%.3f",
+                    self.steps_taken, self._resolve_action_name(_b1_a), _b1_p,
                 )
+            _b1_safe = [
+                _a for _a in available_actions
+                if _action_terminal_probs.get(_a, 0.0) < self.terminal_action_filter_threshold
+            ]
+            if _b1_safe:
+                log.info(
+                    "[B1_TERMINAL_FILTER] filtered %d→%d actions (threshold=%.2f)",
+                    len(available_actions), len(_b1_safe),
+                    self.terminal_action_filter_threshold,
+                )
+                available_actions = _b1_safe
             else:
-                action, _ = self.planner.plan_next_action(
+                log.info("[B1_TERMINAL_FILTER] all actions above threshold, keeping all")
+
+        original_planner_actions = self.planner.actions
+        self.planner.actions = available_actions
+        try:
+            if self.root_sampling_k > 0 and belief is not None and belief.particles:
+                # Root sampling (Silver & Veness 2010, POMCP):
+                votes: Counter = Counter()
+                for _ in range(self.root_sampling_k):
+                    sampled_state = belief.sample()
+                    delta_belief = ParticleBelief(particles={sampled_state: 1})
+                    try:
+                        a, _ = self.planner.plan_next_action(
+                            delta_belief, max_steps=steps_left, mi_bonus=mi_bonus,
+                        )
+                        votes[a] += 1
+                    except Exception:
+                        pass
+                if votes:
+                    action = votes.most_common(1)[0][0]
+                    log.info(
+                        f"[ROOT_SAMPLING] K={self.root_sampling_k} votes={dict(votes)} "
+                        f"selected={action}"
+                    )
+                else:
+                    action, _ = self.planner.plan_next_action(
+                        belief, max_steps=steps_left, mi_bonus=mi_bonus,
+                    )
+            else:
+                action, error = self.planner.plan_next_action(
                     belief, max_steps=steps_left, mi_bonus=mi_bonus,
                 )
-        else:
-            action, error = self.planner.plan_next_action(
-                belief, max_steps=steps_left, mi_bonus=mi_bonus,
+                if len(error) != 0:
+                    log.info("Planning error, taking random action")
+                    action = random.choice(available_actions)
+        finally:
+            self.planner.actions = original_planner_actions
+
+        # C1: Log predicted terminal probability of the chosen action — always logged.
+        # Distinguishes "bad belief" (agent thinks safe but isn't) from "bad planning"
+        # (agent knowingly picks a risky action).
+        if belief is not None and belief.particles:
+            if action not in _action_terminal_probs:
+                _c1_total = sum(belief.particles.values())
+                _c1_p = 0.0
+                for _c1_s, _c1_c in belief.particles.items():
+                    try:
+                        _c1_ns = self.planner.transition_model(_c1_s.copy(), action)
+                        _, _c1_term = self.planner.reward_model(_c1_s, action, _c1_ns)
+                        if _c1_term:
+                            _c1_p += _c1_c / _c1_total
+                    except Exception:
+                        pass
+                _action_terminal_probs[action] = _c1_p
+            log.info(
+                "[C1_TERMINAL_PROB] step=%d action=%s P(terminal)=%.3f",
+                self.steps_taken, self._resolve_action_name(action),
+                _action_terminal_probs[action],
             )
-            if len(error) != 0:
-                log.info("Planning error, taking random action")
-                action = random.choice(self.actions)
 
         self.action_hist.append(action)
         self.steps_taken += 1
@@ -949,23 +1216,28 @@ class LLMPartiallyObsPlanningAgent(
         "observation_model",
         "transition_model",
         "reward_model",
-        "initial_model",
     )
     JOINT_MODEL_TO_FUNC: Dict[str, str] = {
         "initial_model": "initial_func",
         "observation_model": "observation_func",
         "transition_model": "transition_func",
         "reward_model": "reward_func",
-        "initial_model": "initial_func",
     }
 
     @staticmethod
     def _resolve_joint_model_inserts(
-        inserts: Dict[str, Dict[str, Any]], env_name: str
+        inserts: Dict[str, Dict[str, Any]],
+        env_name: str,
+        env_code_path: str = "",
+        env_description: str = "",
     ) -> Dict[str, Any]:
-        """Select joint prompt inserts: tiger env -> tiger prompt, else minigrid prompt."""
-        env_name_lower = env_name.lower()
-        if "tiger" in env_name_lower and "joint_model_tiger" in inserts:
+        """Select joint prompt inserts for the current environment family."""
+        env_context = " ".join(
+            [env_name or "", env_code_path or "", env_description or ""]
+        ).lower()
+        if "popgym" in env_context and "joint_model_popgym" in inserts:
+            return inserts["joint_model_popgym"]
+        if "tiger" in env_context and "joint_model_tiger" in inserts:
             return inserts["joint_model_tiger"]
 
         # Default to minigrid for every non-tiger environment.
@@ -989,6 +1261,15 @@ class LLMPartiallyObsPlanningAgent(
         self, active_joint_models: List[str]
     ) -> Dict[str, Any]:
         inserts = dict(self.joint_model_inserts)
+        inserts.setdefault(
+            "important_constraints",
+            "- You have NO access to the true state -- it is hidden.\n"
+            "- You only observe the emitted observation after each action.\n"
+            "- Your models must explain how observations, transitions, rewards, "
+            "and termination arise from the hidden state and action.\n"
+            "- Successive observations come from the same episode trajectory "
+            "under your transition model, not from independent samples.",
+        )
         targets: List[str] = []
         if "initial_model" in active_joint_models:
             targets.append("initial states")
@@ -1145,7 +1426,7 @@ class LLMPartiallyObsPlanningAgent(
         # cross-entropy. When True, `_pareto_accept` tightens the rule
         # so candidates that regress the step-averaged ``term_nats`` by
         # more than ``pareto_delta`` are rejected even if obs/trans/rew
-        # are unchanged. Lava-terminal blind spot fix (paper §3.3).
+        # are unchanged. Lava-terminal blind spot fix.
         # Default False = byte-identical with pre-F5 selector.
         self.use_pareto_term_channel = bool(use_pareto_term_channel)
 
@@ -1350,7 +1631,7 @@ class LLMPartiallyObsPlanningAgent(
         with open(os.path.join(PROMPT_DIR, "po_inserts.json")) as f:
             self.inserts = json.load(f)
         self.joint_model_inserts = self._resolve_joint_model_inserts(
-            self.inserts, env_name
+            self.inserts, env_name, env_code_path, env_description
         )
 
         self.templates: Dict[str, str] = {}
@@ -1530,6 +1811,7 @@ class LLMPartiallyObsPlanningAgent(
                 ok, err = sanity_check_candidate(
                     local_scope,
                     buffer,
+                    self.empty_state,
                     self.empty_observation,
                     num_samples=self.sanity_check_num_samples,
                     required=required,

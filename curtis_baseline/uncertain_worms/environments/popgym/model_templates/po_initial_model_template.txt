@@ -1,0 +1,13 @@
+def initial_func(empty_state: PopGymState):
+    """
+    Args:
+        empty_state (PopGymState): placeholder state.
+    Returns:
+        state (PopGymState): sampled hidden initial state.
+
+    Return syntax:
+        return PopGymState(value=freeze_value(...))
+
+    Do not return raw dict/list/tuple values directly.
+    """
+    raise NotImplementedError

@@ -1,3 +1,28 @@
+"""Shared utilities: language-model access, run directories, bookkeeping.
+
+Three groups of helpers live here, used by every approach in the
+package:
+
+* **Language model access.** :func:`query_llm` is the single door to a
+  provider (OpenRouter, OpenAI, or a local Ollama server). It owns the
+  retry policy, the optional prompt-caching and provider-pinning knobs,
+  and the token counters that :mod:`main` reports at the end of a run.
+* **Run directories and prompt files.** :func:`get_log_dir` resolves the
+  Hydra run directory that everything else writes into;
+  :func:`parse_prompt` / :func:`write_prompt` read and write the prompt
+  transcripts stored there.
+* **Small shared computations**, such as :func:`parse_code`, which pulls
+  generated Python out of a model reply, and :func:`discounted_reward`.
+
+Credentials come from a ``.env`` file at the repository root (see
+``.env.example``) and never from the configuration files.
+
+Logging convention followed throughout: the instrumentation records
+metadata and counters only — model identifiers, latencies, token
+counts — and never prompt or response content, states, or observations,
+which is what the "POMDP-safe" remarks below refer to.
+"""
+
 from __future__ import annotations
 
 import json
@@ -22,9 +47,10 @@ log = logging.getLogger(__name__)
 env_file = os.path.join(pathlib.Path(__file__).parent.parent, ".env")
 dotenv.load_dotenv(env_file, override=True)
 openrouter_api_key = os.environ.get("OPEN_ROUTER_KEY")
-# Fallback backup key (same OpenRouter account or 2e compte). Swap auto
-# quand la principale retourne 402 "credits" ou similaire. Ne pas logger
-# la cle elle-meme — juste un flag [OPENROUTER_KEY_SWAPPED].
+# Optional second OpenRouter key. A long sweep can exhaust the credits of
+# the primary key mid-run; when that happens the request layer switches to
+# this one instead of failing the experiment. The key itself is never
+# logged — only the [OPENROUTER_KEY_SWAPPED] marker.
 _openrouter_api_key_backup = os.environ.get("OPEN_ROUTER_KEY_BACKUP")
 _openrouter_key_swapped = False
 openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -61,6 +87,8 @@ def _check_openrouter_credits(api_key: Optional[str]) -> Optional[float]:
 PROJECT_ROOT = os.path.dirname(__file__)
 
 # ---- Token tracking ----
+# Process-wide counters: `main` zeroes them when a run starts and reports
+# the totals when it ends, so one run's cost is one process's counters.
 _token_usage: Dict[str, int] = {"input": 0, "output": 0, "calls": 0}
 
 
@@ -77,6 +105,7 @@ def reset_token_usage() -> None:
 
 
 def _record_usage(input_tokens: int, output_tokens: int) -> None:
+    """Add one call's token counts to the process-wide totals."""
     _token_usage["input"] += input_tokens
     _token_usage["output"] += output_tokens
     _token_usage["calls"] += 1
@@ -143,6 +172,9 @@ def get_log_dir() -> str:
     return hydra.core.hydra_config.HydraConfig.get().run.dir
 
 
+# Canonical names of the four POMDP components a generated model must
+# define. The prompts ask for these exact names and the code that checks a
+# reply looks them up by the same spelling.
 REWARD_FUNCTION_NAME = "reward_func"
 TRANSITION_FUNCTION_NAME = "transition_func"
 INITIAL_FUNCTION_NAME = "initial_func"
@@ -157,8 +189,9 @@ OBSERVATION_FUNCTION_NAME = "observation_func"
 # ENGINE = "qwen-32k"
 # ENGINE = "llama33-largecontext"
 DEFAULT_MODELS: Dict[str, str] = {
-    # Paper runs : Qwen 3.6 Plus uniquement. Override via env var PAPER_LLM_MODEL
-    # (utilisé par E4 LLM variation, voir scripts/paper/).
+    # Model used for the reported runs. The ``PAPER_LLM_MODEL`` environment
+    # variable overrides it, which is how the experiment comparing several
+    # language models is run without editing any configuration file.
     "openrouter": os.environ.get("PAPER_LLM_MODEL", "qwen/qwen3.6-plus"),
 }
 
@@ -171,12 +204,13 @@ openai_client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 #     http_client=httpx.Client(),
 # )
 
-# This parsing function can cpature multiple functions in the LLM response, either in the same python block or id separate ones
 def parse_code(input_text: str) -> str | None:
     """Extract the concatenated code from all fenced blocks in ``input_text``.
 
-    Looks for ```python``` blocks first, then any ``` blocks. Returns
-    ``None`` if no fenced block is present.
+    Looks for ```python``` blocks first, then any ``` blocks. Every block
+    is kept and concatenated, because a reply may define the requested
+    functions across several blocks. Returns ``None`` if no fenced block
+    is present.
     """
     pattern1 = "```python(.*?)```"
     pattern2 = "```(.*?)```"
@@ -217,7 +251,28 @@ def query_llm(
     top_p: Optional[float] = None,
     seed: Optional[int] = None,
 ) -> Tuple[str, float]:
-    """Query an LLM provider. Supported providers: "openrouter", "openai", "ollama"."""
+    """Send a chat request to a language-model provider and return its reply.
+
+    Args:
+        message: chat entries, as produced by :func:`parse_prompt`.
+        max_retries: how many times a failed request is retried before the
+            exception is propagated.
+        llm_provider: ``"openrouter"``, ``"openai"`` or ``"ollama"``.
+        llm_model: model identifier; falls back to :data:`DEFAULT_MODELS`.
+        temperature, top_p, seed: sampling controls. They are only put in
+            the request when set, so that a provider's own defaults apply
+            otherwise and the payload stays comparable across conditions.
+
+    Returns:
+        The reply text and the wall-clock seconds the call took.
+
+    Raises:
+        OpenRouterOutOfCreditsError: both OpenRouter keys are out of
+            credits, which no amount of retrying will fix.
+
+    Token counts are added to the process-wide counters for every
+    provider, so cost accounting does not depend on which one is used.
+    """
     global openrouter_api_key, _openrouter_key_swapped
     model = llm_model or DEFAULT_MODELS.get(llm_provider, "")
     retry_count = 0
@@ -308,12 +363,13 @@ def query_llm(
                 if seed is not None:
                     payload["seed"] = seed
 
-                # F7 / MX-2-A: opt-in provider pinning. OpenRouter routes the
-                # same model alias to different backend hosts across sessions;
-                # this causes inter-session reward variance that masks scorer
-                # signal. Set OPENROUTER_PIN_PROVIDER=<csv> to force a single
-                # provider order with no fallback (e.g. "DeepInfra").
-                # Default unset → original routing behaviour (zero regression).
+                # Opt-in provider pinning. OpenRouter routes the same model
+                # alias to different backend hosts from one session to the
+                # next, and those hosts do not answer identically, which adds
+                # between-session variance to results. Set
+                # OPENROUTER_PIN_PROVIDER=<comma-separated list> to force one
+                # provider order with no fallback. Unset by default, in which
+                # case routing is left to OpenRouter.
                 pin_provider = os.environ.get("OPENROUTER_PIN_PROVIDER", "").strip()
                 if pin_provider:
                     order = [p.strip() for p in pin_provider.split(",") if p.strip()]
@@ -323,13 +379,15 @@ def query_llm(
                             "allow_fallbacks": False,
                         }
 
-                # Reasoning cap — shared default between ours and curtis_baseline
-                # for fair LLM budget. Qwen 3.6+ reasons ~8-14k tokens by
-                # default (180-270s latency on 18k-input prompts); capping at
-                # 5000 yields ~1.5× speedup while keeping ~60% of the CoT.
-                # Override via ``PAPER_REASONING_MAX_TOKENS`` env var
-                # (0 → disable reasoning entirely; must match the same value
-                # on the curtis_baseline side via their own utils.py).
+                # Reasoning cap. Recent reasoning models spend on the order
+                # of 8-14k tokens of thinking per call by default, which
+                # dominates latency on long prompts; capping keeps most of
+                # the reasoning at a fraction of the cost. The value is a
+                # shared experimental parameter: the baseline package sets
+                # the same cap in its own copy of this file, so that both
+                # methods are given the same reasoning budget. Override with
+                # ``PAPER_REASONING_MAX_TOKENS`` (0 disables reasoning) and
+                # keep the two sides in step.
                 reasoning_cap_str = os.environ.get(
                     "PAPER_REASONING_MAX_TOKENS", "5000"
                 ).strip()
@@ -354,9 +412,9 @@ def query_llm(
                     data=json.dumps(payload),
                     timeout=300,
                 )
-                # Swap vers backup key si credits/quota epuises sur la principale.
-                # OpenRouter retourne 402 Payment Required quand plus de credits.
-                # Autres indicateurs possibles : "insufficient_quota" dans le body.
+                # OpenRouter answers 402 (Payment Required) once an account
+                # runs out of credits, and 403 in related quota cases. Retry
+                # the request on the backup key rather than lose the run.
                 if (
                     response.status_code in (402, 403)
                     and _openrouter_api_key_backup
@@ -384,8 +442,9 @@ def query_llm(
                     and _openrouter_key_swapped
                     and key_used_in_request != _openrouter_api_key_backup
                 ):
-                    # Race-condition recovery : un autre thread a swap
-                    # pendant qu'on était en HTTP-flight avec la primary.
+                    # Another thread swapped the key while this request was
+                    # in flight, so this one went out with the old key and
+                    # failed for a reason that is already fixed: retry it.
                     log.info(
                         "[OPENROUTER_RACE_RECOVERY] status=%d on stale primary "
                         "(another thread swapped during in-flight request) — "
@@ -401,8 +460,9 @@ def query_llm(
                         data=json.dumps(payload),
                         timeout=300,
                     )
-                # Fail fast when the backup key also reports an auth or
-                # credit failure, instead of silently retrying.
+                # Both keys are refused: stop here instead of entering the
+                # generic retry loop below, which would sleep 60s at a time
+                # while every attempt gets the same answer.
                 if response.status_code in (402, 403):
                     prim_rem = _check_openrouter_credits(
                         os.environ.get("OPEN_ROUTER_KEY")
@@ -446,9 +506,11 @@ def query_llm(
                 except Exception as _instr_err:
                     log.debug(f"[OPENROUTER] instrumentation failed: {_instr_err}")
                 content = str(response_json["choices"][0]["message"]["content"])
-                # OpenRouter echoes token usage in the response body. Keep
-                # canonical per-experiment bookkeeping and add a detailed
-                # log line/metric. POMDP-safe: only counts, never content.
+                # OpenRouter echoes token counts in the response body. They
+                # feed the process-wide counters and are also written out
+                # per call, as an [OPENROUTER_TOKENS] line and a W&B metric,
+                # so cost can be attributed to individual calls after the
+                # fact from the logs alone. Counts only, never content.
                 usage = response_json.get("usage", {}) or {}
                 ptok = int(usage.get("prompt_tokens", 0))
                 ctok = int(usage.get("completion_tokens", 0))
@@ -496,7 +558,14 @@ def query_llm(
             if retry_count > max_retries:
                 raise e
             sleep_time = min(backoff_factor * (2**retry_count), 60)  # cap at 60s
-            log.info(f"Connection failed. Retrying in {sleep_time} seconds...")
+            # Any failure lands here, not only a connection one: an invalid key
+            # returns a body without `choices` and raises a KeyError. Naming the
+            # exception keeps the retry from describing an authentication
+            # problem as a network problem.
+            log.info(
+                f"Request failed ({type(e).__name__}: {e}). "
+                f"Retrying in {sleep_time} seconds..."
+            )
             time.sleep(sleep_time)
 
 if __name__ == "__main__":

@@ -1,25 +1,34 @@
-"""Régénération des datasets paper — dual dump ours/curtis.
+"""Rebuilds the demonstration slices both codebases learn from.
 
-Chaque codebase définit ``uncertain_worms.structs.ReplayBuffer`` → conflit
-pickle si les 2 sont importées dans le même process. Solution : le script
-s'auto-relance en 2 passes subprocess (``--side ours``, ``--side curtis``),
-chacune avec son ``sys.path`` dédié. Le mode ``--orchestrate`` pilote les 2
-passes et fait le sanity check final.
+Each experiment reads a demonstration file holding exactly N_D
+trajectories. This script cuts those slices out of a shared pool of
+recorded episodes, once per codebase.
 
-Entrée : ``uncertain_worms/environments/minigrid/trajectory_data/{env}_pure_mixed.pkl``
-Sortie, par env et par N ∈ {1, 3, 5, 10} :
-  - ``uncertain_worms/environments/minigrid/trajectory_data/{env}_paper_N{N}.pkl``
-  - ``curtis_baseline/uncertain_worms/environments/minigrid/trajectory_data/{env}_paper_N{N}.pkl``
+Two files are written per (env, N) rather than one, because the two
+implementations disagree on what an observation contains: the proposed
+method stores three fields, the baseline four, including the absolute
+agent position its own environment reveals. Everything else — states,
+actions, rewards, termination flags — is identical by construction, and
+the third pass below verifies that step by step.
 
-Garanties :
-  - Mêmes (previous_states, next_states, actions, rewards, terminated) ✓
-  - Seule divergence = observations (ours: 3 champs, curtis: 4 champs +
-    agent_pos absolu)
-  - Sélection déterministe des indices avec diversité succès/échec/truncation
-  - Sanity check post-écriture : 3e subprocess compare step-by-step
+Both codebases define ``uncertain_worms.structs.ReplayBuffer``, and a
+pickle written under one cannot be read under the other in the same
+process. Hence the structure: the script re-invokes itself as
+``--side ours`` and ``--side curtis``, each subprocess importing exactly
+one codebase, and the default orchestrator mode drives both passes and
+the comparison.
 
-Usage :
-  python scripts/paper/regenerate_datasets.py                # mode orchestrator
+Input:
+  ``uncertain_worms/environments/minigrid/trajectory_data/{env}_pure_mixed.pkl``
+Output, per env and per N in ``N_VALUES``:
+  ``<codebase>/uncertain_worms/environments/minigrid/trajectory_data/{env}_paper_N{N}.pkl``
+
+Slice selection is deterministic and nested: the N=4 file is the N=2 file
+plus two trajectories. Sample-efficiency curves therefore measure the
+effect of adding demonstrations, not of drawing a different sample.
+
+Usage:
+  python scripts/paper/regenerate_datasets.py
   python scripts/paper/regenerate_datasets.py --dry-run
 """
 from __future__ import annotations
@@ -47,16 +56,21 @@ ENV_NAMES = {
 }
 N_VALUES = (1, 2, 3, 4, 5, 6, 8, 10, 12)
 
-# Diversité succès/échec/truncation par (env, N). Source 20 trajs :
-#   lava       : 10 succ + 9 fail + 1 trunc
-#   corners    : 17 succ + 0 fail + 3 trunc
-#   four_rooms : 15 succ + 0 fail + 5 trunc
-#   unlock     : 15 succ + 0 fail + 5 trunc
+# How many successful, failed and truncated trajectories each slice
+# contains. The mix is fixed per (env, N) rather than drawn at random so
+# that a slice is reproducible and so that no N accidentally consists only
+# of successes: a model induced from successes alone never sees the
+# transitions that end an episode.
 #
-# N=12 extends N=10 by construction: select_indices uses pool[:n], so
-# N=12 contains N=10 plus two additional trajectories.
+# The composition follows what the source pool holds, for instance 10
+# successes, 9 failures and 1 truncation for lava out of 20 trajectories.
+# Only the lava environments contain failures: elsewhere an episode either
+# reaches the goal or runs out of steps.
+#
+# Since ``select_indices`` takes ``pool[:n]`` per category, the slices are
+# nested: every N contains the trajectories of the N below it.
 SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
-    # Lava : 10 succ + 9 fail + 1 trunc
+    # Lava: 10 succ + 9 fail + 1 trunc
     ("lava", 1):  [("succ", 1)],
     ("lava", 2):  [("succ", 1), ("fail", 1)],
     ("lava", 3):  [("succ", 1), ("fail", 1), ("trunc", 1)],
@@ -66,7 +80,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("lava", 8):  [("succ", 4), ("fail", 3), ("trunc", 1)],
     ("lava", 10): [("succ", 5), ("fail", 4), ("trunc", 1)],
     ("lava", 12): [("succ", 6), ("fail", 5), ("trunc", 1)],
-    # Corners : 17 succ + 0 fail + 3 trunc
+    # Corners: 17 succ + 0 fail + 3 trunc
     ("corners", 1):  [("succ", 1)],
     ("corners", 2):  [("succ", 2)],
     ("corners", 3):  [("succ", 2), ("trunc", 1)],
@@ -76,7 +90,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("corners", 8):  [("succ", 7), ("trunc", 1)],
     ("corners", 10): [("succ", 9), ("trunc", 1)],
     ("corners", 12): [("succ", 10), ("trunc", 2)],
-    # Four Rooms : 15 succ + 0 fail + 5 trunc
+    # Four Rooms: 15 succ + 0 fail + 5 trunc
     ("four_rooms", 1):  [("succ", 1)],
     ("four_rooms", 2):  [("succ", 2)],
     ("four_rooms", 3):  [("succ", 2), ("trunc", 1)],
@@ -86,7 +100,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("four_rooms", 8):  [("succ", 6), ("trunc", 2)],
     ("four_rooms", 10): [("succ", 7), ("trunc", 3)],
     ("four_rooms", 12): [("succ", 9), ("trunc", 3)],
-    # Unlock : 15 succ + 0 fail + 5 trunc
+    # Unlock: 15 succ + 0 fail + 5 trunc
     ("unlock", 1):  [("succ", 1)],
     ("unlock", 2):  [("succ", 2)],
     ("unlock", 3):  [("succ", 2), ("trunc", 1)],
@@ -96,7 +110,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("unlock", 8):  [("succ", 6), ("trunc", 2)],
     ("unlock", 10): [("succ", 7), ("trunc", 3)],
     ("unlock", 12): [("succ", 9), ("trunc", 3)],
-    # Stochastic Lava : 5 succ + 5 fail + 0 trunc
+    # Stochastic Lava: 5 succ + 5 fail + 0 trunc
     ("lava_stoch", 1):  [("succ", 1)],
     ("lava_stoch", 2):  [("succ", 1), ("fail", 1)],
     ("lava_stoch", 3):  [("succ", 2), ("fail", 1)],
@@ -105,7 +119,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("lava_stoch", 6):  [("succ", 3), ("fail", 3)],
     ("lava_stoch", 8):  [("succ", 4), ("fail", 4)],
     ("lava_stoch", 10): [("succ", 5), ("fail", 5)],
-    # Stochastic FourRooms : 10 succ + 0 fail + 0 trunc
+    # Stochastic FourRooms: 10 succ + 0 fail + 0 trunc
     ("four_rooms_stoch", 1):  [("succ", 1)],
     ("four_rooms_stoch", 2):  [("succ", 2)],
     ("four_rooms_stoch", 3):  [("succ", 3)],
@@ -114,7 +128,7 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
     ("four_rooms_stoch", 6):  [("succ", 6)],
     ("four_rooms_stoch", 8):  [("succ", 8)],
     ("four_rooms_stoch", 10): [("succ", 10)],
-    # Stochastic Unlock : 10 succ + 0 fail + 0 trunc
+    # Stochastic Unlock: 10 succ + 0 fail + 0 trunc
     ("unlock_stoch", 1):  [("succ", 1)],
     ("unlock_stoch", 2):  [("succ", 2)],
     ("unlock_stoch", 3):  [("succ", 3)],
@@ -127,6 +141,11 @@ SELECTION: Dict[Tuple[str, int], List[Tuple[str, int]]] = {
 
 
 def classify(ep) -> str:
+    """Label an episode as succ, fail or trunc from how it ended.
+
+    An episode that terminated without reward failed (it walked into
+    lava); one that neither terminated nor scored ran out of steps.
+    """
     last_r = ep.rewards[-1] if ep.rewards else 0.0
     last_t = ep.terminated[-1] if ep.terminated else False
     if last_r > 0:
@@ -137,6 +156,13 @@ def classify(ep) -> str:
 
 
 def select_indices(kinds_list: Sequence[str], plan: Sequence[Tuple[str, int]]) -> List[int]:
+    """Pick the source episodes realising ``plan``, in pool order.
+
+    Taking the first ``n`` of each category, rather than sampling, is what
+    makes the slices nested and reproducible. Raises if the pool cannot
+    satisfy the plan, so a mismatch shows up here and not as a silently
+    short dataset.
+    """
     by_kind: Dict[str, List[int]] = {"succ": [], "fail": [], "trunc": []}
     for i, k in enumerate(kinds_list):
         by_kind[k].append(i)
@@ -151,12 +177,17 @@ def select_indices(kinds_list: Sequence[str], plan: Sequence[Tuple[str, int]]) -
 
 
 # ---------------------------------------------------------------------------
-# WORKER : tourne dans un subprocess isolé, PYTHONPATH pointant vers un seul
-# codebase. Produit les pkl + un manifest JSON des indices sélectionnés.
+# Worker pass
 # ---------------------------------------------------------------------------
 def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
-    # sys.path[0] est déjà positionné par l'orchestrateur via PYTHONPATH.
-    # L'import `uncertain_worms.*` résout donc vers le bon codebase.
+    """Write one codebase's demonstration files. Runs in its own process.
+
+    Also dumps a manifest of the selected indices, so the two passes can
+    be checked to have picked the same source episodes.
+    """
+    # Imported inside the function, not at module scope: which codebase
+    # `uncertain_worms` resolves to depends on the PYTHONPATH the
+    # orchestrator set for this subprocess.
     from uncertain_worms.structs import ReplayBuffer
     from uncertain_worms.environments.minigrid.minigrid_env import (
         minigrid_hardcoded_observation_model_gen,
@@ -170,13 +201,15 @@ def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
     except TypeError:
         empty_obs = empty_obs_gen_fn
 
-    # Baseline side = format NATIF de leur env avec fully_obs=False :
-    #   - image = FOV 3x3
-    #   - agent_pos = pos reelle (leur MinigridObservation l'inclut by design)
-    #   - agent_dir, carrying = proprioception
-    # Verifie empiriquement : state.get_field_of_view(3) == env.step(fully_obs=False).image
-    # Precedemment on mettait state.grid.copy() (FO 10x10) -> mismatch avec leur
-    # env runtime en fully_obs=False qui renvoie 3x3 -> PF collapse.
+    # Observation format of the baseline environment under fully_obs=False:
+    # a 3x3 field of view, the true agent position (its observation type
+    # includes it by design), plus direction and carried object.
+    #
+    # This has to match what the environment returns at run time, not what
+    # the demonstrations could have contained. Storing the full grid here
+    # instead makes the demonstrations look fully observed, and the
+    # particle filter then collapses when the agent meets 3x3 observations
+    # it has no model for.
     def po_obs_fn_curtis(state):
         return MinigridObservation(
             image=state.get_field_of_view(3),
@@ -185,8 +218,10 @@ def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
             carrying=state.carrying,
         )
 
-    # Le buffer source est dans le codebase ours quel que soit le side
-    # (les classes Episode/MinigridState sont structurellement compatibles).
+    # Both passes read the same source pool, which lives in the top-level
+    # package: the Episode and state classes are structurally compatible
+    # across the two codebases, so either can load it. Only the written
+    # observations differ.
     source_dir = REPO_ROOT / "uncertain_worms" / "environments" / "minigrid" / "trajectory_data"
     if side == "ours":
         out_dir = source_dir
@@ -241,7 +276,8 @@ def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
                     term = ep.terminated[t]
 
                     if side == "ours":
-                        # PO : FOV 3×3 via la obs_fn POMDP-clean
+                        # 3x3 field of view, and nothing that is not
+                        # observable from the agent's own viewpoint.
                         prev_obs = pomdp_obs_fn(
                             state=prev_state, action=int(action),
                             empty_obs=empty_obs, agent_view_size=3,
@@ -251,14 +287,16 @@ def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
                             empty_obs=empty_obs, agent_view_size=3,
                         )
                     else:
-                        # curtis : format natif PO de leur env (fully_obs=False)
-                        # FOV 3x3 + agent_pos (revele, leur design) + dir + carrying
+                        # Same field of view, plus the agent position the
+                        # baseline's own observations reveal.
                         prev_obs = po_obs_fn_curtis(prev_state)
                         next_obs = po_obs_fn_curtis(next_state)
 
-                    # La signature d'append_episode_step diffère entre les 2
-                    # codebases : ours prend prev_obs+next_obs, curtis prend
-                    # seulement next_obs. On détecte par introspection.
+                    # The two buffers take different arguments: one stores
+                    # both observations of a transition, the other only
+                    # the resulting one. Detected by introspection rather
+                    # than keyed off `side`, so this keeps working if
+                    # either signature changes.
                     import inspect
                     sig = inspect.signature(buf_new.append_episode_step)
                     if "previous_obs" in sig.parameters or len(sig.parameters) >= 7:
@@ -282,15 +320,22 @@ def worker_main(side: str, envs: Sequence[str], dry_run: bool) -> int:
 
         manifest[env_key] = env_manifest
 
-    # Dump manifest côté side (pour orchestrateur)
+    # Handed to the orchestrator through a file, since the two passes are
+    # separate processes.
     manifest_path = Path(f"/tmp/regen_manifest_{side}.json")
     manifest_path.write_text(json.dumps(manifest, indent=2))
     return 0
 
 
 # ---------------------------------------------------------------------------
-# SANITY CHECK : 3e subprocess qui charge les 2 pkl et compare step-par-step.
-# On le fait côté curtis (les 2 pkl y sont compatibles structurellement).
+# Verification pass, run as a third subprocess: loads both files of a pair
+# and compares them step by step. Observations are excluded from the
+# comparison, since differing observations are the whole point of writing
+# two files; everything else must be identical.
+#
+# Source for that subprocess, kept as a string because it has to run under
+# an import path this process does not have. It runs on the baseline side,
+# where both files happen to be loadable.
 # ---------------------------------------------------------------------------
 SANITY_WORKER = r"""
 import json, sys, numpy as np
@@ -318,7 +363,7 @@ def cmp(path_ours, path_curtis):
                 return f"ep{ei}.prev.agent_dir[{t}] differ"
             if not np.array_equal(so.grid, sc.grid):
                 return f"ep{ei}.prev.grid[{t}] differ"
-            # check next_state aussi
+            # the resulting state as well
             sno, snc = eo.next_states[t], ec.next_states[t]
             if list(sno.agent_pos) != list(snc.agent_pos):
                 return f"ep{ei}.next.agent_pos[{t}] differ"
@@ -337,10 +382,16 @@ print(json.dumps(results))
 
 
 def orchestrate(envs: Sequence[str], dry_run: bool) -> int:
+    """Run both worker passes, then verify the two outputs agree.
+
+    Returns non-zero if a pass failed or if any pair differs.
+    """
     py = sys.executable
     script = str(Path(__file__).resolve())
 
     def _run(side: str, pp: str) -> int:
+        # The codebase is selected by PYTHONPATH, which is the only thing
+        # that differs between the two passes.
         env = {**os.environ, "PYTHONPATH": pp + os.pathsep + os.environ.get("PYTHONPATH", "")}
         cmd = [py, script, "--side", side, "--envs", ",".join(envs)]
         if dry_run:
@@ -364,9 +415,9 @@ def orchestrate(envs: Sequence[str], dry_run: bool) -> int:
     for env_key in envs:
         env_full = ENV_NAMES[env_key]
         for N in N_VALUES:
-            # Skip pairs that were not generated (no SELECTION entry —
-            # e.g. stoch envs cap at N=10 since their source has only
-            # 10 trajectories).
+            # Same condition as in the worker: an (env, N) with no
+            # SELECTION entry was never written, because the source pool
+            # is too small to fill it.
             if (env_key, N) not in SELECTION:
                 continue
             pairs.append({
@@ -376,12 +427,12 @@ def orchestrate(envs: Sequence[str], dry_run: bool) -> int:
                 "curtis": str(CURTIS_ROOT / "uncertain_worms" / "environments" / "minigrid"
                               / "trajectory_data" / f"{env_full}_paper_N{N}.pkl"),
             })
-    # Tourne dans le contexte curtis (les 2 pkl y sont loadables)
     env = {**os.environ, "PYTHONPATH": str(CURTIS_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")}
     out = subprocess.check_output(
         [py, "-c", SANITY_WORKER, json.dumps(pairs)], env=env,
     ).decode()
-    # Extract last line that is pure JSON
+    # The result is the last line that parses as JSON: importing either
+    # codebase prints banners that would otherwise be read as output.
     results = None
     for ln in reversed(out.strip().splitlines()):
         try:
@@ -404,9 +455,13 @@ def orchestrate(envs: Sequence[str], dry_run: bool) -> int:
 
 
 def main() -> int:
+    """Entry point. Without ``--side``, orchestrates both passes."""
     ap = argparse.ArgumentParser()
+    # --side is how the script re-invokes itself; it is not meant to be
+    # passed by hand, and running one pass alone leaves the two sets of
+    # demonstration files out of step.
     ap.add_argument("--side", choices=["ours", "curtis"], default=None,
-                    help="(interne) exécute une passe worker")
+                    help="(internal) run one worker pass")
     ap.add_argument("--envs", default=",".join(ENV_NAMES.keys()))
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

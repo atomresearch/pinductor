@@ -1,7 +1,13 @@
-"""Exécute toutes les suites de tests unitaires du dossier tests/.
+"""Runs every test suite in this directory and reports a single verdict.
 
-Retour : 0 si tout passe, ≠0 sinon.
-Usage : python scripts/paper/tests/run_all.py
+Each suite is a plain script with a ``__main__`` block, executed in its
+own subprocess: several of them import one of the two ``uncertain_worms``
+packages, which cannot coexist in one interpreter.
+
+Exits 0 only if all suites pass. Run it before trusting any result the
+pipeline produces.
+
+Usage: python scripts/paper/tests/run_all.py
 """
 from __future__ import annotations
 

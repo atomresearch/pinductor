@@ -1,10 +1,16 @@
-"""Parseur robuste des logs de ``main.py`` — extrait rewards par épisode,
-tokens, et wall-time.
+"""Recovers metrics from the text logs written by ``main.py``.
 
-Formats attendus (voir ``main.py``) :
-  "Episode {N}"                     (début de l'épisode N)
-  "Episode reward: {value}"         (fin de l'épisode N)
+The runner reads results out of the log rather than out of a structured
+artefact, which keeps the two codebases free of any reporting hook: they
+print, this module reads. It is therefore tolerant by design — a crashed
+run yields a partially filled :class:`ParsedRun` instead of an exception,
+and the runner infers the failure from how many episodes are missing.
+
+Recognised lines (emitted by ``main.py``):
+  "Episode {N}"                     start of episode N
+  "Episode reward: {value}"         end of episode N
   "[TOKENS] {C} LLM calls, {I}in + {O}out tokens"
+  "[OPENROUTER_TOKENS] prompt=... completion=... total=..."
   "Average Episode Reward: {mean}"
 """
 from __future__ import annotations
@@ -18,9 +24,10 @@ _RE_EPISODE_REWARD = re.compile(r"Episode reward:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\
 _RE_TOKENS = re.compile(
     r"\[TOKENS\]\s+(\d+)\s+LLM\s+calls,\s+(\d+)\s*in\s*\+\s*(\d+)\s*out"
 )
-# OpenRouter per-call log. This is more reliable than the final [TOKENS]
-# line when offline LLM calls happen before the episode loop, because the
-# main loop resets token counters before evaluation.
+# Per-call token line. Preferred over the final [TOKENS] summary because
+# main.py resets its token counters before the episode loop: a run whose
+# LLM calls all happen during offline model induction reports zero there.
+# Summing the per-call lines recovers the true total.
 _RE_OPENROUTER_TOKENS = re.compile(
     r"\[OPENROUTER_TOKENS\]\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\d+)"
 )
@@ -36,6 +43,13 @@ _RE_STEPS = re.compile(r"\bStep\s+(\d+)")
 
 @dataclass
 class ParsedRun:
+    """Metrics recovered from one run's log.
+
+    ``rewards`` is indexed by episode, and the runner uses its length to
+    tell how far the subprocess got: fewer entries than expected means the
+    remaining episodes were never produced.
+    """
+
     rewards: List[float] = field(default_factory=list)
     avg_reward: Optional[float] = None
     prompt_tokens: int = 0
@@ -46,10 +60,10 @@ class ParsedRun:
 
 
 def parse(log_text: str) -> ParsedRun:
-    """Parse un log (output.log de Hydra ou stdout) et retourne les metrics.
+    """Parse a run log (Hydra's output.log, or captured stdout).
 
-    Implémentation robuste — les patterns peuvent manquer si le run a crash.
-    Les champs restent à leur default dans ce cas.
+    Never raises: patterns that the log does not contain leave their field
+    at its default, which is how a crashed run is detected downstream.
     """
     out = ParsedRun()
     current_episode: Optional[int] = None
@@ -58,7 +72,8 @@ def parse(log_text: str) -> ParsedRun:
     for line in log_text.splitlines():
         m = _RE_EPISODE_START.search(line)
         if m:
-            # Commit le step-count de l'épisode précédent
+            # The step count of an episode is only known once the next
+            # episode starts, so it is committed here and again at EOF.
             if current_episode is not None:
                 out.steps_per_episode.append(current_max_step)
             current_episode = int(m.group(1))
@@ -77,7 +92,7 @@ def parse(log_text: str) -> ParsedRun:
 
         m = _RE_OPENROUTER_TOKENS.search(line)
         if m:
-            # Accumule tous les OpenRouter calls (plus fiable que [TOKENS] final)
+            # Accumulated across every call of the run.
             out.prompt_tokens += int(m.group(1))
             out.completion_tokens += int(m.group(2))
             out.llm_calls += 1
@@ -85,8 +100,9 @@ def parse(log_text: str) -> ParsedRun:
 
         m = _RE_TOKENS.search(line)
         if m:
-            # Fallback seulement si aucun OpenRouter token capturé (providers
-            # non-OpenRouter comme Mistral / ollama).
+            # Fallback for providers that emit no per-call line. Only used
+            # when nothing was accumulated above, since the summary would
+            # otherwise overwrite the more reliable per-call total.
             if out.llm_calls == 0:
                 out.llm_calls = int(m.group(1))
                 out.prompt_tokens = int(m.group(2))
@@ -102,7 +118,7 @@ def parse(log_text: str) -> ParsedRun:
         if m:
             out.likelihood_final = float(m.group(1))
 
-    # Commit du dernier épisode
+    # Last episode: no following "Episode N" line closes it.
     if current_episode is not None:
         out.steps_per_episode.append(current_max_step)
 
@@ -110,5 +126,6 @@ def parse(log_text: str) -> ParsedRun:
 
 
 def parse_file(path) -> ParsedRun:
+    """Parse a log file. Undecodable bytes are replaced, not fatal."""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         return parse(f.read())

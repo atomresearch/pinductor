@@ -1,4 +1,10 @@
-"""Tests de experiments.py : construction des atomes, respect du protocole."""
+"""Tests for experiments.py: atom construction and protocol compliance.
+
+They pin the shape of each experiment — which environments, conditions,
+seeds and episodes it covers — because those counts are what the reported
+budget and error bars are computed from. An experiment that quietly loses
+a condition or a seed still runs to completion.
+"""
 from __future__ import annotations
 
 import sys
@@ -40,8 +46,8 @@ def test_E2_offline_sweeps_ND() -> None:
 def test_E2_online_sweeps_M() -> None:
     atoms = E2_online()
     ms = {a.extra.get("agent.num_model_attempts") for a in atoms}
-    # Default budget is M=5 only; lower-quality LLM proposals do not benefit
-    # from larger budgets.
+    # A single attempt budget, not a sweep: the appendix reports that
+    # larger budgets do not help weaker proposal models.
     assert ms == {5}
 
 
@@ -54,12 +60,12 @@ def test_E2b_stochastic_uses_stoch_envs() -> None:
 def test_E4_three_tiers() -> None:
     atoms = E4_llm_variation()
     llms = {a.llm_model for a in atoms}
-    # The paper sweeps a small (qwen3-14b) and a frontier (claude opus 4.7).
-    # The default base LLM (qwen3.6-plus) is reused from E1 and not re-run
-    # here.
+    # Two tiers, small and frontier. The default LLM is the third point of
+    # the reported comparison, but its episodes come from the other
+    # experiments rather than being re-run here.
     assert "qwen/qwen3-14b" in llms
     assert "anthropic/claude-opus-4.7" in llms
-    # Always evaluated on the proposed method only.
+    # The ablation varies the LLM, so it applies to the LLM-based method.
     conds = {a.condition for a in atoms}
     assert conds == {"ours"}
 

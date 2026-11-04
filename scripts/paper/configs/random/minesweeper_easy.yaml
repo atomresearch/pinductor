@@ -1,0 +1,45 @@
+# condition=random env=minesweeper_easy
+# Uniform action selection. Reads no demonstrations.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 14
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+- 10
+- 11
+- 12
+- 13
+- 14
+- 15
+env_name: MineSweeperEasy
+extras:
+  environment: minesweeper_easy
+  approach: random
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: ${env_name}
+  wrappers:
+  - previous_action
+  - antialias
+  - markovian_info
+  - flatten
+  - discrete_action
+agent:
+  _target_: uncertain_worms.policies.random_policy.RandomPolicy
+  fully_obs: false
+  actions: *id001

@@ -1,11 +1,14 @@
-"""Plot learning curve E2_online_K10 : reward vs episode_idx.
+"""Learning curves for the online experiment: reward against episode index.
 
-Pour chaque (env, condition), une ligne avec shaded CI95.
-Filtre : skip une condition si moins de 7 done à n'importe quel ep_idx
-(7 = 70 % de 10 seeds attendus par ep_idx).
+One line per (env, condition), with a shaded 95% confidence interval over
+seeds. A condition is dropped entirely if any episode index has fewer than
+``MIN_DONE_PER_EP`` completed seeds, so a curve is never drawn from a
+sample that thins out partway along the x-axis.
 
-Usage : python scripts/paper/plot_progression.py
-Output : outputs/paper_runs/plots/E2_online_K10_progression_<env>.{png,pdf}
+Reads the registry written by ``paper_runner``.
+
+Usage: python scripts/paper/plot_progression.py
+Output: outputs/paper_runs/plots/E2_online_K10_progression_<env>.{png,pdf}
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ OUT = REPO / "outputs" / "paper_runs" / "plots"
 
 EXP = "E2_online_K10"
 N_EPISODES = 10
-MIN_DONE_PER_EP = 7  # 70 % de 10 seeds
+MIN_DONE_PER_EP = 7  # 70% of the 10 seeds a full run produces
 COLOR = {"curtis_their": "#1f77b4", "ours": "#ff7f0e"}
 LABEL = {"curtis_their": "curtis", "ours": "ours (REx)"}
 
@@ -38,7 +41,7 @@ def _ci95(values):
 
 
 def fetch_per_ep(conn, exp, env, cond):
-    """Retourne dict ep_idx -> list[reward] pour les rows status=done."""
+    """Return {episode index: [reward, ...]} for the rows marked done."""
     cur = conn.cursor()
     cur.execute(
         "SELECT episode_idx, reward FROM runs "

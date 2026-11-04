@@ -1,0 +1,90 @@
+# condition=curtis_their env=minesweeper_medium
+# POMDP Coder (Curtis et al., 2025) on PopGym MineSweeper. Its particle count
+# and planning budget are those of the Pinductor configuration for the same
+# difficulty.
+#
+# It names the baseline's own agent and runs from `curtis_baseline/`, like the
+# MiniGrid files of this condition — unlike its Blocks file, which uses the
+# restored agent in the top-level package.
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+max_steps: 30
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+
+extras:
+  environment: popgym_minesweeper_medium
+  approach: curtis_their
+
+env_name: &env_name "PopGym-MineSweeperMedium"
+actions: &actions [
+  0, 1, 2, 3, 4, 5,
+  6, 7, 8, 9, 10, 11,
+  12, 13, 14, 15, 16, 17,
+  18, 19, 20, 21, 22, 23,
+  24, 25, 26, 27, 28, 29,
+  30, 31, 32, 33, 34, 35
+]
+
+env:
+  _target_: uncertain_worms.environments.popgym.popgym_env.PopGymEnvironment
+  env_id: MineSweeperMedium
+  wrappers:
+    - previous_action
+    - antialias
+    - markovian_info
+    - flatten
+    - discrete_action
+
+agent:
+  _target_: uncertain_worms.policies.partially_obs_planning_agent.LLMPartiallyObsPlanningAgent
+  max_attempts: 5000
+  num_particles: 80
+  num_model_attempts: 2
+  num_online_model_attempts: 1
+  num_initial_model_samples: 120
+  num_input_examples: 3
+  fully_obs: false
+  mask_repeated_actions: true
+  env_code_path: environments/popgym
+  actions: *actions
+  learn_transition: true
+  learn_initial: true
+  learn_reward: true
+  learn_observation: true
+  use_online: true
+  use_offline: true
+  dataset_path: "environments/popgym/trajectory_data/MineSweeperMedium_random_N50.pkl"
+  env_description: "PopGym MineSweeperMedium with wrappers PreviousAction, Antialias, Markovian(FULL_IN_INFO_DICT), Flatten, and DiscreteAction. The action space is Discrete(36): action a clicks one square on the 6x6 board, row = a // 6 and col = a % 6. The hidden state is the 6x6 grid flattened by PopGym, with 0=CLEAR, 1=MINE, and 2=VIEWED. The reset observation is a flattened 21-element binary vector: entries 0-6 one-hot encode the observed adjacent-mine count, entries 7-12 one-hot encode previous action row, entries 13-18 one-hot encode previous action column, and entries 19-20 are antialias/reset-vs-step bits. A safe unseen click marks the square VIEWED and gives a small positive reward; clicking a mine terminates with a negative reward; clicking an already viewed square gives a smaller negative reward. The objective is to reveal all non-mine cells while avoiding mines."
+
+  empty_state:
+    _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_state_gen
+
+  empty_observation:
+    _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_observation_gen
+
+  planner:
+    _target_: uncertain_worms.planners.PO_DAStar.PO_DAStar
+    actions: *actions
+    max_expansions: 30
+    num_rollouts: 1
+    action_cost: 0.0
+    entropy_coeff: 0.05
+    lambda_coeff: 0.01
+
+    empty_observation:
+      _target_: uncertain_worms.environments.popgym.popgym_env.popgym_empty_observation_gen
+
+    initial_model:
+      _target_: uncertain_worms.structs.empty_initial_model_gen
+    transition_model:
+      _target_: uncertain_worms.structs.empty_transition_model_gen
+    reward_model:
+      _target_: uncertain_worms.structs.empty_reward_model_gen
+    observation_model:
+      _target_: uncertain_worms.structs.empty_observation_model_gen

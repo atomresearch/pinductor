@@ -1,16 +1,18 @@
-"""plot_pretty.py — Paper-ready plots with colorblind-safe palette + raw dots.
+"""Paper figures: sample-efficiency and comparison plots.
 
-Improvements over plot_clean.py :
-  - NDS extended to {2,4,6,8,10,12}
-  - Conditions = (curtis_their, ours, tabular) where applicable
-  - Wong colorblind-safe palette
-  - CI95 error bars + raw episode dots (jittered)
-  - Consistent serif font
-  - Larger axes, no cryptic legends
-  - Output in PNG (web) + PDF (paper)
+Reads the registry written by ``paper_runner`` and renders one figure per
+experiment, in PNG and PDF.
 
-Usage : python scripts/paper/plot_pretty.py
-Output : outputs/paper_runs/plots/pretty/
+Presentation choices worth knowing about:
+  - a colorblind-safe palette, applied consistently across every figure,
+    so a condition keeps its colour from one plot to the next;
+  - 95% confidence intervals drawn together with the individual episode
+    results, since a mean over 30 episodes hides bimodal outcomes;
+  - a cell is plotted only if it holds the full expected number of
+    episodes, so no bar summarises a partial run.
+
+Usage: python scripts/paper/plot_pretty.py
+Output: outputs/paper_runs/plots/pretty/
 """
 from __future__ import annotations
 
@@ -25,8 +27,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Paper-style plot bundle from tueplots (figure size, fontsizes,
-# constrained_layout). usetex disabled so LaTeX is not required at runtime.
+# Conference styling: correct figure width, font sizes and layout for the
+# paper's template. usetex is off so the figures build without a LaTeX
+# installation; enable it if the text must match the paper exactly.
 try:
     from tueplots import bundles
     plt.rcParams.update(bundles.neurips2024(usetex=False, family="serif"))
@@ -51,8 +54,8 @@ DB = REPO / "outputs" / "paper_runs" / "registry.db"
 OUT = REPO / "outputs" / "paper_runs" / "plots" / "pretty"
 OUT.mkdir(parents=True, exist_ok=True)
 
-THRESHOLD_PCT = 0.0  # legacy, unused — see _is_admissible
-EXPECTED_N_PER_CELL = 30  # 10 seeds × 3 ep — strict requirement 
+THRESHOLD_PCT = 0.0  # kept for the skip message only; see _is_admissible
+EXPECTED_N_PER_CELL = 30  # 10 seeds x 3 ep, required in full
 COLOR = {
     "curtis_their": WONG["skyblue"],
     "ours":         WONG["vermilion"],
@@ -101,7 +104,12 @@ def fetch_group(conn: sqlite3.Connection, exp_id: str, env: str, cond: str
 
 
 def _is_admissible(rewards_done: List[float], total: int) -> bool:
-    """A cell is admissible iff it has the full expected episode count."""
+    """Whether a cell holds enough episodes to be plotted.
+
+    The threshold is the full expected count, not a fraction of it: a bar
+    averaged over a subset of seeds is not comparable to one averaged over
+    all of them, and nothing in the figure would show the difference.
+    """
     return len(rewards_done) >= EXPECTED_N_PER_CELL
 
 
@@ -121,8 +129,9 @@ def plot_e2_offline(conn: sqlite3.Connection) -> None:
     """Bar chart per ND, conditions side-by-side, one figure per env."""
     NDS = [2, 4, 6, 8, 10, 12]
     CONDS = ("curtis_their", "ours", "tabular")
-    # Cells without the full expected count are skipped silently so this
-    # remains safe to run mid-bench.
+    # Incomplete cells are skipped rather than plotted, so this is safe to
+    # run against a registry that is still filling up: whatever is
+    # finished appears, the rest is absent from the figure.
     for env in ("lava", "unlock", "four_rooms", "corners"):
         bars: List[Tuple[int, str, float, float, int, List[float]]] = []
         for nd in NDS:

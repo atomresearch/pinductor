@@ -1,0 +1,4 @@
+def observation_func(state, action, empty_obs):
+    """Return the BlocksObservation perceived in ``state`` (handle action=None
+    for the reset observation)."""
+    pass

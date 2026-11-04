@@ -25,7 +25,7 @@ minigrid/
 
 | Gym id | File | Notes |
 | --- | --- | --- |
-| `CornerGoalRandom-Empty-10x10-v0` | `custom_environments/corners_large_random.py` | Goal in a random corner (paper §5 §App. G.1) |
+| `CornerGoalRandom-Empty-10x10-v0` | `custom_environments/corners_large_random.py` | Goal in a random corner (paper §5, App. E) |
 | `MyMiniGrid-LavaWall-v0` | `custom_environments/lavagap.py` | Lava wall with one gap; deterministic by default |
 | `MyMiniGrid-StochasticLavaWall-v0` | same | Stochastic variant (agent start + goal vary) |
 | `MyMiniGrid-FourRooms-v0` | `custom_environments/four_rooms.py` | 4 rooms connected by 4 narrow doorways |
@@ -35,7 +35,7 @@ minigrid/
 
 The natural-language descriptions injected into LLM prompts for each env
 live in `env_descriptions.txt` at the repository root (level L3 of the
-prompt-information sweep, paper Fig. 7).
+prompt-information sweep, paper Fig. 11).
 
 ## Observation model
 
@@ -46,7 +46,7 @@ prompt-information sweep, paper Fig. 7).
 * `direction` — agent's facing direction (0–3).
 * `carrying` — index of the object currently held, if any.
 
-The soft distance used by the particle filter (paper Eq. 7) is implemented
+The soft distance used by the particle filter (paper Eqs. 4–5) is implemented
 on this dataclass via `MinigridObservation.distance_soft`. Optional Numba
 acceleration is loaded lazily through `particle_filtering.field_weights`.
 

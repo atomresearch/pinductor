@@ -1,0 +1,111 @@
+env,method,metric,value
+Empty,Optimal,return,0.922
+Empty,Optimal,solved_pct,100
+Corners,Optimal,return,0.865
+Corners,Optimal,solved_pct,100
+Lava,Optimal,return,0.727
+Lava,Optimal,solved_pct,100
+Unlock,Optimal,return,0.780
+Unlock,Optimal,solved_pct,100
+FourRooms,Optimal,return,0.639
+FourRooms,Optimal,solved_pct,100
+Empty,POMDP Coder,return,0.922
+Empty,POMDP Coder,solved_pct,100
+Corners,POMDP Coder,return,0.601
+Corners,POMDP Coder,solved_pct,80
+Lava,POMDP Coder,return,0.599
+Lava,POMDP Coder,solved_pct,90
+Unlock,POMDP Coder,return,0.401
+Unlock,POMDP Coder,solved_pct,70
+FourRooms,POMDP Coder,return,0.280
+FourRooms,POMDP Coder,solved_pct,60
+Empty,Direct LLM (FO),return,0.906
+Empty,Direct LLM (FO),solved_pct,100
+Corners,Direct LLM (FO),return,0.426
+Corners,Direct LLM (FO),solved_pct,50
+Lava,Direct LLM (FO),return,0.000
+Lava,Direct LLM (FO),solved_pct,0
+Unlock,Direct LLM (FO),return,0.000
+Unlock,Direct LLM (FO),solved_pct,0
+FourRooms,Direct LLM (FO),return,0.047
+FourRooms,Direct LLM (FO),solved_pct,11
+Empty,GT models,return,0.922
+Empty,GT models,solved_pct,100
+Corners,GT models,return,0.684
+Corners,GT models,solved_pct,93
+Lava,GT models,return,0.564
+Lava,GT models,solved_pct,90
+Unlock,GT models,return,0.748
+Unlock,GT models,solved_pct,100
+FourRooms,GT models,return,0.379
+FourRooms,GT models,solved_pct,80
+Empty,Pinductor,return,0.922
+Empty,Pinductor,solved_pct,100
+Corners,Pinductor,return,0.582
+Corners,Pinductor,solved_pct,83
+Lava,Pinductor,return,0.594
+Lava,Pinductor,solved_pct,83
+Unlock,Pinductor,return,0.357
+Unlock,Pinductor,solved_pct,53
+FourRooms,Pinductor,return,0.433
+FourRooms,Pinductor,solved_pct,80
+Empty,DreamerV3 (demonstration-seeded),return,0.867
+Empty,DreamerV3 (demonstration-seeded),solved_pct,95
+Corners,DreamerV3 (demonstration-seeded),return,0.680
+Corners,DreamerV3 (demonstration-seeded),solved_pct,97
+Lava,DreamerV3 (demonstration-seeded),return,0.257
+Lava,DreamerV3 (demonstration-seeded),solved_pct,39
+Unlock,DreamerV3 (demonstration-seeded),return,0.623
+Unlock,DreamerV3 (demonstration-seeded),solved_pct,87
+FourRooms,DreamerV3 (demonstration-seeded),return,0.480
+FourRooms,DreamerV3 (demonstration-seeded),solved_pct,91
+Empty,Direct LLM (PO),return,0.874
+Empty,Direct LLM (PO),solved_pct,97
+Corners,Direct LLM (PO),return,0.168
+Corners,Direct LLM (PO),solved_pct,23
+Lava,Direct LLM (PO),return,0.060
+Lava,Direct LLM (PO),solved_pct,10
+Unlock,Direct LLM (PO),return,0.000
+Unlock,Direct LLM (PO),solved_pct,0
+FourRooms,Direct LLM (PO),return,0.045
+FourRooms,Direct LLM (PO),solved_pct,10
+Empty,PPO-GRU,return,0.834
+Empty,PPO-GRU,solved_pct,100
+Corners,PPO-GRU,return,0.490
+Corners,PPO-GRU,solved_pct,67
+Lava,PPO-GRU,return,0.048
+Lava,PPO-GRU,solved_pct,15
+Unlock,PPO-GRU,return,0.285
+Unlock,PPO-GRU,solved_pct,40
+FourRooms,PPO-GRU,return,0.000
+FourRooms,PPO-GRU,solved_pct,0
+Empty,DreamerV3 (online),return,0.899
+Empty,DreamerV3 (online),solved_pct,100
+Corners,DreamerV3 (online),return,0.701
+Corners,DreamerV3 (online),solved_pct,100
+Lava,DreamerV3 (online),return,0.000
+Lava,DreamerV3 (online),solved_pct,0
+Unlock,DreamerV3 (online),return,0.000
+Unlock,DreamerV3 (online),solved_pct,0
+FourRooms,DreamerV3 (online),return,0.000
+FourRooms,DreamerV3 (online),solved_pct,0
+Empty,Tabular,return,0.904
+Empty,Tabular,solved_pct,100
+Corners,Tabular,return,0.084
+Corners,Tabular,solved_pct,10
+Lava,Tabular,return,0.046
+Lava,Tabular,solved_pct,7
+Unlock,Tabular,return,0.045
+Unlock,Tabular,solved_pct,7
+FourRooms,Tabular,return,0.071
+FourRooms,Tabular,solved_pct,17
+Empty,Random,return,0.028
+Empty,Random,solved_pct,3
+Corners,Random,return,0.027
+Corners,Random,solved_pct,3
+Lava,Random,return,0.000
+Lava,Random,solved_pct,0
+Unlock,Random,return,0.000
+Unlock,Random,solved_pct,0
+FourRooms,Random,return,0.000
+FourRooms,Random,solved_pct,0

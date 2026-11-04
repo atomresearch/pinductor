@@ -1,0 +1,87 @@
+# condition=ours_hardcoded env=blocks
+# Ground-truth models run through this paper's own filter and planner. This is
+# the GT-models reference for Blocks, not an upper bound: the models are exact
+# but the state stays hidden and the planning budget is the same as every other
+# method's.
+#
+# Blocks is the paper's non-navigation domain. Its protocol differs from the
+# MiniGrid one: 120 steps rather than 40, over 10 seeds of 3 episodes, because a
+# rand6 instance needs far more moves to solve.
+#
+# The planner settings match `ours/blocks.yaml` exactly — same node budget,
+# same action cost, same heuristic — so the only difference between this
+# condition and that one is where the models come from. Anything else would
+# confound the comparison. Stated plainly: `ours/blocks.yaml` reproduces the
+# resolved configuration of the run that produced the reported Pinductor
+# number, whereas this file is that configuration with the models swapped. The
+# campaign that produced the reported ground-truth-models number was not
+# recovered, so this is the faithful counterpart by construction, not by
+# provenance.
+#
+# Needs no API key, which makes it the cheapest end-to-end check that the
+# environment, the particle filter and the planner agree with each other.
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+max_steps: 120
+num_episodes: 3
+seed: 0
+gamma: 0.98
+save_log: false
+replay_path: None
+actions: &id001
+- 0
+- 1
+- 2
+- 3
+instance: rand6
+cap: 6
+env_name: Blocks-rand6-po-v0
+extras:
+  environment: blocks
+  approach: ours_hardcoded
+env:
+  _target_: uncertain_worms.environments.blocksworld.blocksworld_env.BlocksEnvironment
+  instance: ${instance}
+agent:
+  _target_: uncertain_worms.policies.partially_obs_planning_agent.PartiallyObsPlanningAgent
+  fully_obs: false
+  actions: *id001
+  max_attempts: 250000
+  num_particles: 100
+  state_sampler:
+    _target_: uncertain_worms.environments.blocksworld.sample_state.make_blocks_state_sampler
+    reference_state:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_state_gen
+      instance: ${instance}
+  empty_state:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_state_gen
+    instance: ${instance}
+  empty_observation:
+    _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+    cap: ${cap}
+  planner:
+    _target_: uncertain_worms.planners.PO_DAStar.PO_DAStar
+    actions: *id001
+    max_expansions: 20000
+    lambda_coeff: 0.0
+    entropy_coeff: 0.0
+    action_cost: 0.01
+    mi_bonus_coeff: 0.0
+
+    heuristic:
+      _target_: uncertain_worms.planners.model_qmdp_heuristic.ModelQMDPHeuristic
+      scale: 0.01
+    empty_observation:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_empty_observation_gen
+      cap: ${cap}
+    initial_model:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_hardcoded_initial_model_gen
+      instance: ${instance}
+    transition_model:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_hardcoded_transition_model_gen
+    reward_model:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_hardcoded_reward_model_gen
+    observation_model:
+      _target_: uncertain_worms.environments.blocksworld.blocksworld_env.blocks_hardcoded_observation_model_gen
+      cap: ${cap}

@@ -1,0 +1,16 @@
+def reward_func(state, action, next_state):
+    """
+    Args:
+        state (PopGymState): previous hidden Markov state.
+        action (int): action executed by the agent.
+        next_state (PopGymState): next hidden Markov state.
+    Returns:
+        reward (float): reward for the transition.
+        done (bool): whether the episode terminates.
+
+    Return syntax:
+        return float(reward), bool(done)
+
+    Do not return arrays, lists, dicts, or strings as the reward.
+    """
+    raise NotImplementedError

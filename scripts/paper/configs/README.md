@@ -1,24 +1,39 @@
 # `scripts/paper/configs/` — Hydra configs (auto-generated)
 
-42 self-contained YAML files, one per `(condition, environment)` cell.
-They are **auto-generated** by `scripts/paper/build_configs.py`; do not
-edit them by hand unless you are sure you understand the implications
-(your edits will be wiped on the next regeneration).
+82 self-contained YAML files, one per `(condition, environment)` cell.
+The 46 MiniGrid cells whose header starts with `# Auto-generated` were
+produced by `scripts/paper/build_configs.py`; do not edit them by hand
+unless you are sure you understand the implications (your edits will be
+wiped on the next regeneration). The others (Blocks, MineSweeper and
+Direct LLM) are written by hand, and their header says what they are.
 
 ## Layout
 
 ```
 scripts/paper/configs/
-├── ours/                # Pinductor (joint TROI proposal, paper §4)
-├── curtis_their/        # POMDP Coder baseline (per-component TROI, App. F.1)
+├── ours/                # Pinductor (joint TROI proposal)
+├── ours_hardcoded/      # True models in Pinductor's filter and planner (reference)
+├── curtis_their/        # POMDP Coder baseline (per-component TROI)
 ├── curtis_hardcoded/    # POMDP Coder baseline with hand-coded ground-truth models
-├── tabular/             # Tabular frequency-table baseline (App. F.2)
-└── random/              # Uniform random-action baseline (App. F.3)
+├── tabular/             # Tabular frequency-table baseline
+├── random/              # Uniform random-action baseline
+├── direct_llm_fo/       # Direct LLM, fully observed (no model, no planner)
+└── direct_llm_po/       # Direct LLM, partially observed
 ```
 
-Each subdirectory contains seven environment YAMLs:
-`corners.yaml`, `lava.yaml`, `lava_stoch.yaml`, `four_rooms.yaml`,
-`four_rooms_stoch.yaml`, `unlock.yaml`, `unlock_stoch.yaml`.
+The environments are the file names inside each subdirectory, and not
+every condition carries all of them:
+
+| Condition | Environments |
+| --- | --- |
+| `ours`, `ours_hardcoded`, `random` | all 12 |
+| `curtis_their`, `tabular` | 11 — all but `empty` |
+| `curtis_hardcoded` | 8 — MiniGrid only |
+| `direct_llm_po`, `direct_llm_fo` | 8 — `blocks`, `corners`, `four_rooms`, `lava`, `unlock` and the three `minesweeper_*` |
+
+The twelve are `corners`, `empty`, `four_rooms`, `four_rooms_stoch`,
+`lava`, `lava_stoch`, `unlock`, `unlock_stoch`, `blocks`,
+`minesweeper_easy`, `minesweeper_medium` and `minesweeper_hard`.
 
 ## Condition → working directory
 
@@ -28,8 +43,9 @@ condition into the matching subprocess CWD:
 
 | Condition | Subprocess CWD | `uncertain_worms` resolved from |
 | --- | --- | --- |
-| `ours` | repository root | `uncertain_worms/` (Pinductor) |
-| `curtis_their`, `curtis_hardcoded`, `random`, `tabular` | `curtis_baseline/` | `curtis_baseline/uncertain_worms/` (POMDP Coder baseline) |
+| `ours`, `ours_hardcoded` | repository root | `uncertain_worms/` (Pinductor) |
+| `curtis_their`, `curtis_hardcoded`, `random`, `tabular`, `direct_llm_po`, `direct_llm_fo` | `curtis_baseline/` | `curtis_baseline/uncertain_worms/` (POMDP Coder baseline) |
+| `curtis_their` on `blocks` only | repository root | `uncertain_worms/` (restored baseline agent, `curtis_original_agent.py`) |
 
 Run a single condition manually (this is what `paper_runner.py` does
 under the hood):
@@ -55,10 +71,11 @@ default_flow_style=False)`) and writes the result here.
 
 The source `approaches/` trees are intentionally **not shipped** in this
 bundle — they contain hundreds of unused legacy variants from the
-original POMDP Coder codebase. The 42 YAMLs you see here are the frozen,
-audited output of that pipeline and the only ones the paper experiments
-ever consume. Re-running `build_configs.py` on this bundle will skip
-every cell with `[skip] … source manquante` and emit `0 YAMLs generated`,
+original POMDP Coder codebase. The 46 generated YAMLs here are the frozen,
+audited output of that pipeline; together with the hand-written files they
+are the configurations the paper's experiments use. Re-running
+`build_configs.py` on this bundle will skip every cell with
+`[skip] …: source not found` and emit `0 YAMLs generated`,
 which is the expected behaviour.
 
 If you do want to regenerate from sources (e.g., after editing a
@@ -84,5 +101,8 @@ opening every YAML, grep:
 grep -nH "kernel_bandwidth:" scripts/paper/configs/*/*.yaml
 ```
 
-All six paper hyperparameters from Table 1 / App. D are explicitly stored
-in the YAMLs — there is no hidden default scattered across the codebase.
+The paper's hyperparameters (App. A.5) are stored in the YAMLs. Two are
+left to the agent's constructor default, which is the value the paper
+states: the kernel bandwidth on Blocks (κ = 1) and the final-selection
+temperature on MineSweeper (T = 0); `docs/ARCHITECTURE.md` §3 lists every
+value per suite.

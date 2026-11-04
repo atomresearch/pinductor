@@ -615,9 +615,11 @@ class LLMPartiallyObsPlanningAgent(
         use_offline: bool = True,
         use_online: bool = False,
         dataset_path: str = "",
+        mask_repeated_actions: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.mask_repeated_actions = bool(mask_repeated_actions)
 
         self.model_translators = {
             "transition_model": transition_model_translator,
@@ -676,6 +678,24 @@ class LLMPartiallyObsPlanningAgent(
         if obs is not None:
             self.observation_hist.append(obs)
 
+        available_actions = list(self.actions)
+        if self.mask_repeated_actions:
+            used_actions = set(self.action_hist)
+            available_actions = [
+                action for action in self.actions if action not in used_actions
+            ]
+            if not available_actions:
+                available_actions = list(self.actions)
+                log.warning(
+                    "[ACTION_MASK] all actions exhausted; restoring full action set"
+                )
+            else:
+                log.info(
+                    "[ACTION_MASK] available=%d masked=%d",
+                    len(available_actions),
+                    len(self.actions) - len(available_actions),
+                )
+
         # If no belief has been established yet, initialize it
         in_error_state = False
         if self.current_belief is None:
@@ -703,10 +723,11 @@ class LLMPartiallyObsPlanningAgent(
         if in_error_state == 0:
             steps_left = self.max_steps - self.steps_taken
             assert belief is not None
+            self.planner.actions = available_actions
             action, error = self.planner.plan_next_action(belief, max_steps=steps_left)
         else:
             log.info("In error state, returning random action")
-            action = random.choice(self.actions)
+            action = random.choice(available_actions)
 
         self.action_hist.append(action)
         self.steps_taken += 1
@@ -959,9 +980,9 @@ class LLMPartiallyObsPlanningAgent(
         log.info("Offline updating models")
 
         # Split replay buffer into two equal parts.
-        # N=1 edge case (sample efficiency sweep) : half == 0 → test buffer
-        # vide → ZeroDivisionError dans _evaluate_coverage. On reuse the
-        # single trajectory for both train & test in that case.
+        # N=1 edge case (sample efficiency sweep): half == 0 leaves the test
+        # buffer empty, and _evaluate_coverage then divides by zero. In that
+        # case the single trajectory is reused for both train and test.
         n_ep = len(self.offline_replay_buffer.episodes)
         if n_ep >= 2:
             test_replay_buffer = ReplayBuffer[StateType, ActType, ObsType](

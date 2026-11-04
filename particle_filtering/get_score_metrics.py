@@ -541,6 +541,13 @@ class ScoreEvaluator:
             and isinstance(getattr(first, "image", None), np.ndarray)
             and hasattr(actual_obs, "image")
             and isinstance(getattr(actual_obs, "image", None), np.ndarray)
+            # The fast path reads agent_dir/carrying (MiniGrid fields) below.
+            # Non-MiniGrid grid observations (e.g. SokobanObservation) expose
+            # ``image`` but not those fields, and define their own
+            # ``distance_soft`` — route them to the per-particle path so we use
+            # their metric instead of crashing on the missing attributes.
+            and hasattr(first, "agent_dir")
+            and hasattr(actual_obs, "agent_dir")
         )
         if not has_image:
             return [p.distance_soft(actual_obs) for p in predicted_obs]
@@ -1168,7 +1175,7 @@ class ScoreEvaluator:
         # are not shipped with this paper release. The only modes wired in
         # this bundle are:
         #   * "energy"          — paper default (distance-kernel
-        #                         pseudo-likelihood, Eq. 7 / Eq. 8).
+        #                         pseudo-likelihood, Eq. 5 / Eq. 7).
         #   * "belief_quality"  — oracle reference, requires ground-truth
         #                         states from the replay buffer. Used for
         #                         calibration only.
@@ -1612,10 +1619,14 @@ class ScoreEvaluator:
                         r_pred, t_pred = self.reward_model(
                             prev_state.copy(), action, state.copy()
                         )
-                        rew_errors.append((r_pred - actual_reward) ** 2)
-                        r_preds_raw.append(float(r_pred))
+                        r_pred_f = float(r_pred)
+                        actual_reward_f = float(actual_reward)
+                        rew_errors.append((r_pred_f - actual_reward_f) ** 2)
+                        r_preds_raw.append(r_pred_f)
                         term_preds.append(int(bool(t_pred)))
                         rew_weights.append(w)
+                    except (TypeError, ValueError):
+                        continue
                     except Exception:
                         continue
                 if rew_weights:

@@ -1,11 +1,11 @@
-"""Régression : le bug 'run_ids dict écrase les atomes multi-exp'.
+"""Regression tests for grouping atoms that several experiments share.
 
-Quand plusieurs exp_ids génèrent les mêmes overrides → même hp_hash → groupés
-ensemble par ``group_atoms``. Le bug précédent : ``run_ids[episode_idx]`` écrasait
-les entries → un seul atome était mark_done, les autres restaient ``pending``.
-
-Ce test vérifie que tous les atomes multi-exp d'un group reçoivent bien leur
-ligne registry distincte avec mark_done.
+Experiments that resolve to identical overrides produce the same hash and
+are merged into one group by ``group_atoms``, so one subprocess serves all
+of them. The failure this pins down is that the group's atoms are then
+keyed only by episode index, which collides across experiments: one atom
+gets its result and the others stay pending forever, with no error
+anywhere.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from hyperparams import DEFAULT_LLM
 
 
 def test_group_atoms_preserves_multi_exp() -> None:
-    """Plusieurs exp_ids avec mêmes overrides → 1 group, N atomes dans le group."""
+    """Experiments with identical overrides share a single group."""
     atoms = [
         Atom(exp_id="EXP_A", env="lava", condition="ours", seed=0,
              episode_idx=0, llm_model=DEFAULT_LLM, extra={}),
@@ -33,13 +33,13 @@ def test_group_atoms_preserves_multi_exp() -> None:
     assert len(groups) == 1, f"expected 1 group (same hp_hash), got {len(groups)}"
     assert len(groups[0].atoms) == 3, (
         f"expected 3 atoms in group, got {len(groups[0].atoms)}")
-    # Les exp_ids doivent être distincts
+    # Each experiment must still be represented separately.
     exp_ids = {a.exp_id for a in groups[0].atoms}
     assert exp_ids == {"EXP_A", "EXP_B", "EXP_C"}
 
 
 def test_group_atoms_separates_different_hp_hash() -> None:
-    """Différents `extra` → différents hp_hash → différents groups."""
+    """A difference in `extra` separates the groups."""
     atoms = [
         Atom(exp_id="EXP_A", env="lava", condition="ours", seed=0,
              episode_idx=0, llm_model=DEFAULT_LLM, extra={}),
@@ -52,8 +52,10 @@ def test_group_atoms_separates_different_hp_hash() -> None:
 
 
 def test_launch_group_multi_exp_run_ids_unique() -> None:
-    """Simule launch_group (sans subprocess) et vérifie que chaque exp_id
-    a sa propre entrée dans le registry."""
+    """Every experiment of a group gets its own registry row.
+
+    Reproduces what launch_group does, without the subprocess.
+    """
     import tempfile
     from registry import Registry
     from paper_runner import group_atoms
@@ -70,7 +72,7 @@ def test_launch_group_multi_exp_run_ids_unique() -> None:
     groups = group_atoms(atoms)
     assert len(groups) == 1
     g = groups[0]
-    # Simule upsert pending pour chaque atome
+    # One pending row per atom of the group.
     rids = []
     for atom in g.atoms:
         rid = registry.upsert_pending(
@@ -79,7 +81,7 @@ def test_launch_group_multi_exp_run_ids_unique() -> None:
             llm_model=g.llm_model, overrides=g.overrides,
         )
         rids.append(rid)
-    # 5 rids distincts attendus
+    # Distinct ids: no atom overwrote another.
     assert len(set(rids)) == 5, f"expected 5 distinct rids, got {set(rids)}"
 
 

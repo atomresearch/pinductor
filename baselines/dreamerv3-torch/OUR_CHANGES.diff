@@ -1,0 +1,94 @@
+diff --git a/configs.yaml b/configs.yaml
+index 8d8d7ae..cb33b6d 100644
+--- a/configs.yaml
++++ b/configs.yaml
+@@ -182,3 +182,73 @@ debug:
+   prefill: 1
+   batch_size: 10
+   batch_length: 20
++
++# ------------------------------------------------------------------------
++# uncertain_worms (OUR paper POMDP envs) — vector obs, discrete actions.
++# Protocol mapping (official DreamerV3 -> NM512 knobs):
++#   smallest model preset  -> repo DEFAULTS (dyn_deter/hidden/units=512,
++#                             cnn_depth=32); NM512 has no size flag, defaults == S.
++#   batch_length 16        -> batch_length: 16
++#   train_ratio 256        -> train_ratio: 256  (~1 grad update / env step at bs16 len16)
++#   single env             -> envs: 1
++#   seed 0                 -> seed: 0  (override on CLI for 1,2)
++# vector obs: encoder/decoder mlp_keys='vector', cnn_keys='$^' (dummy image ignored).
++# discrete actions: actor onehot + reinforce imag gradient (as atari/crafter).
++# video_pred_log false (no real image to reconstruct).  action_repeat 1 (no frame skip).
++# uw_defaults is a base; append the per-env preset AND uw_defaults on the CLI, e.g.:
++#   python dreamer.py --configs uw_defaults uw_blocks_rand6 --logdir ...
++uw_defaults:
++  envs: 1
++  action_repeat: 1
++  batch_size: 16
++  batch_length: 16
++  train_ratio: 256
++  prefill: 0
++  seed: 0
++  compile: False
++  video_pred_log: false
++  eval_episode_num: 10
++  eval_every: 1e4
++  log_every: 5e2
++  time_limit: 1000
++  dataset_size: 1000000
++  encoder: {mlp_keys: 'vector', cnn_keys: '$^'}
++  decoder: {mlp_keys: 'vector', cnn_keys: '$^'}
++  actor: {dist: 'onehot', std: 'none'}
++  imag_gradient: 'reinforce'
++
++uw_blocks_rand6:
++  task: uw_blocks_rand6
++  steps: 120000
++
++uw_cornergoal:
++  task: uw_cornergoal
++  steps: 40000
++
++uw_empty5x5:
++  task: uw_empty5x5
++  steps: 10000
++
++uw_fourrooms:
++  task: uw_fourrooms
++  steps: 60000
++
++uw_lavawall:
++  task: uw_lavawall
++  steps: 40000
++
++uw_ms_easy:
++  task: uw_ms_easy
++  steps: 78700
++
++uw_ms_medium:
++  task: uw_ms_medium
++  steps: 169000
++
++uw_ms_hard:
++  task: uw_ms_hard
++  steps: 303000
++
++uw_unlock:
++  task: uw_unlock
++  steps: 40000
+diff --git a/dreamer.py b/dreamer.py
+index f4de475..3c41f5f 100644
+--- a/dreamer.py
++++ b/dreamer.py
+@@ -193,6 +193,11 @@ def make_env(config, mode, id):
+ 
+         env = minecraft.make_env(task, size=config.size, break_speed=config.break_speed)
+         env = wrappers.OneHotAction(env)
++    elif suite == "uw":
++        import envs.uw as uw
++
++        env = uw.UWEnv(task, seed=config.seed + id)
++        env = wrappers.OneHotAction(env)
+     else:
+         raise NotImplementedError(suite)
+     env = wrappers.TimeLimit(env, config.time_limit)

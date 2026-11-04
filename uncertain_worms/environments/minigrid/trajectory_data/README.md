@@ -13,11 +13,11 @@ so each codebase can read demos relative to its own working directory.
 ```
 
 * `*_paper_N<N>.pkl` — a slice of `N` trajectories used by the offline
-  sample-efficiency sweep (paper Fig. 4 / experiment `E2_offline`). Valid
+  sample-efficiency sweep (paper Fig. 5 / experiment `E2_offline`). Valid
   `N` values are `{1, 2, 3, 4, 5, 6, 8, 10, 12}`; `N = 10` is the default
   used by `E1`.
 * `*_pure_mixed.pkl` — the unsliced source buffer (≈ 20–50 trajectories,
-  mixing successes, failures and truncations; see App. E.2 of the paper).
+  mixing successes, failures and truncations; see App. D.2 of the paper).
   Consumed by `scripts/paper/regenerate_datasets.py`.
 
 ## Pickle format

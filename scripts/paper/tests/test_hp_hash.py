@@ -1,10 +1,14 @@
-"""Tests pour hp_hash + resolve_overrides (post-refactor modular YAML).
+"""Tests for ``hp_hash`` and ``resolve_overrides``.
 
-Depuis le refactor modular YAML, ``resolve_overrides()`` ne retourne plus les
-hyperparams scientifiques (qui sont figés dans les YAMLs
-``scripts/paper/configs/<cond>/<env>.yaml``). Ces tests vérifient que le
-runtime API reste stable : extras wandb, sweeps E2 (dataset_path et
-num_model_attempts), filtrage random/tabular, dédup hp_hash.
+These pin the boundary between the two places a run's configuration comes
+from. Scientific hyperparameters belong to the generated YAML and must not
+appear in the runtime overrides; conversely the swept parameters, the
+tracker metadata and the per-condition filtering must appear there. A
+regression on either side silently changes what an experiment ran with.
+
+The hash tests matter for a second reason: ``hp_hash`` is the
+deduplication key, so a hash that is unstable re-runs everything, and one
+that is too coarse serves the wrong results.
 """
 from __future__ import annotations
 
@@ -19,22 +23,22 @@ from hyperparams import hp_hash, resolve_overrides, DEFAULT_LLM, ENV_NAMES
 def test_hp_hash_stable() -> None:
     d = {"a": 1, "b": "x", "c": True}
     assert hp_hash(d) == hp_hash(dict(d))
-    # Ordre d'insertion ne change rien
+    # Insertion order must not matter.
     assert hp_hash({"b": "x", "a": 1, "c": True}) == hp_hash(d)
 
 
 def test_hp_hash_different_on_any_change() -> None:
     base = resolve_overrides("lava", "ours")
     h0 = hp_hash(base)
-    # Toucher 1 clé → hash différent
+    # Any change to any key must change the hash.
     mut = dict(base)
     mut["num_episodes"] = 1
     assert hp_hash(mut) != h0
 
 
 def test_extras_always_present() -> None:
-    """Les +extras.* sont injectés pour toutes les conditions."""
-    for cond in ("ours", "curtis_their", "curtis_hardcoded",
+    """Tracker metadata is emitted for every condition."""
+    for cond in ("ours", "curtis_their", "ours_hardcoded", "curtis_hardcoded",
                  "random", "tabular"):
         o = resolve_overrides("lava", cond)
         assert "+extras.approach" in o
@@ -42,14 +46,15 @@ def test_extras_always_present() -> None:
         assert "+extras.experiment" in o
         assert o["+extras.experiment"] == "paper"
         assert o["+extras.environment"] == "lava"
-    # ours → approach="ours"
+    # ours and ours_hardcoded are reported under one approach name.
     assert resolve_overrides("lava", "ours")["+extras.approach"] == "ours"
-    # curtis_their reste "curtis_their"
+    assert resolve_overrides("lava", "ours_hardcoded")["+extras.approach"] == "ours"
+    # Other conditions keep their own name.
     assert resolve_overrides("lava", "curtis_their")["+extras.approach"] == "curtis_their"
 
 
 def test_llm_never_in_hydra_overrides() -> None:
-    """Le modèle LLM transite via PAPER_LLM_MODEL env var, jamais Hydra."""
+    """The LLM is passed by environment variable, never as an override."""
     for cond in ("ours", "curtis_their", "random", "tabular",
                  "curtis_hardcoded"):
         o = resolve_overrides("lava", cond, llm_model="anthropic/claude-opus-4-7")
@@ -57,8 +62,10 @@ def test_llm_never_in_hydra_overrides() -> None:
 
 
 def test_no_scientific_hyperparams_in_runtime_overrides() -> None:
-    """Les hyperparams figés (max_attempts, entropy, UCB1…) sont dans les YAMLs,
-    PAS injectés par resolve_overrides.
+    """Frozen hyperparameters come from the YAML, not from the overrides.
+
+    If any of these reappeared here, the YAML would stop being an
+    accurate record of what a run used.
     """
     forbidden = (
         "agent.max_attempts", "agent.num_particles",
@@ -70,24 +77,22 @@ def test_no_scientific_hyperparams_in_runtime_overrides() -> None:
     for cond in ("ours", "curtis_their"):
         o = resolve_overrides("lava", cond)
         for k in forbidden:
-            assert k not in o, f"{cond} a reçu {k}, devrait venir du YAML"
+            assert k not in o, f"{cond} received {k}; it should come from the YAML"
 
 
 def test_e2_offline_sweep_dataset_path() -> None:
-    """E2 offline : ``agent.num_input_examples`` → override dataset_path."""
-    # N=3 pour ours
+    """The demonstration count selects a dataset file."""
     o = resolve_overrides("lava", "ours",
                           extra={"agent.num_input_examples": 3})
     assert o["agent.dataset_path"].endswith(
         "MyMiniGrid-LavaWall-v0_paper_N3.pkl"
     )
-    # N=10 pour ours (par défaut dans le YAML) → si demandé explicitement,
-    # on réinjecte quand même (idempotent)
+    # Re-requesting the value the YAML already holds is idempotent.
     o10 = resolve_overrides("lava", "ours",
                             extra={"agent.num_input_examples": 10})
     assert o10["agent.dataset_path"].endswith("_paper_N10.pkl")
-    # N=7 (invalide) : raise loud rather than silently routing to N=10
-    # (avoids ND10/ND12 hp_hash collisions seen in prior campaigns).
+    # An N with no dataset must raise rather than fall back to another
+    # one, which would make two sweep points read the same file.
     try:
         resolve_overrides("lava", "ours",
                           extra={"agent.num_input_examples": 7})
@@ -95,45 +100,43 @@ def test_e2_offline_sweep_dataset_path() -> None:
         pass
     else:
         raise AssertionError("expected ValueError for invalid N=7")
-    # curtis_their aussi
+    # Same for the baseline condition.
     oc = resolve_overrides("lava", "curtis_their",
                            extra={"agent.num_input_examples": 4})
     assert oc["agent.dataset_path"].endswith("_paper_N4.pkl")
 
 
 def test_e2_offline_sweep_filtered_for_no_dataset_consumers() -> None:
-    """random et curtis_hardcoded n'acceptent pas dataset_path.
-    On ne doit PAS leur injecter d'override.
-    """
-    for cond in ("random", "curtis_hardcoded"):
+    """Conditions whose agent rejects dataset_path never receive it."""
+    for cond in ("random", "ours_hardcoded", "curtis_hardcoded"):
         o = resolve_overrides("lava", cond,
                               extra={"agent.num_input_examples": 4})
         assert "agent.dataset_path" not in o, \
             f"{cond} ne doit pas recevoir dataset_path"
-    # tabular accepte dataset_path
+    # The tabular agent does accept it.
     ot = resolve_overrides("lava", "tabular",
                            extra={"agent.num_input_examples": 4})
     assert ot["agent.dataset_path"].endswith("_paper_N4.pkl")
 
 
 def test_e2_online_sweep_num_model_attempts() -> None:
-    """E2 online : ``agent.num_model_attempts`` override pour ours et curtis_their."""
+    """The attempt budget reaches the LLM conditions and only those."""
     for cond in ("ours", "curtis_their"):
         o = resolve_overrides("lava", cond,
                               extra={"agent.num_model_attempts": 10})
         assert o["agent.num_model_attempts"] == 10
-    # Pas d'injection pour non-LLM
-    for cond in ("random", "tabular", "curtis_hardcoded"):
+    # Conditions with no LLM would reject the kwarg.
+    for cond in ("random", "tabular", "ours_hardcoded", "curtis_hardcoded"):
         o = resolve_overrides("lava", cond,
                               extra={"agent.num_model_attempts": 10})
         assert "agent.num_model_attempts" not in o
 
 
 def test_num_episodes_forced_via_extra() -> None:
-    """Smoke : num_episodes=1 via extra → réinjecté en override."""
+    """num_episodes is overridden only when a caller asks for it."""
     o = resolve_overrides("lava", "ours", extra={"num_episodes": 1})
     assert o["num_episodes"] == 1
-    # Par défaut, pas d'override (YAML paper a num_episodes=3)
+    # Otherwise the YAML decides.
     o_default = resolve_overrides("lava", "ours")
     assert "num_episodes" not in o_default
 

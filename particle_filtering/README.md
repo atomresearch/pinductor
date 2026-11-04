@@ -12,8 +12,8 @@ and environments, this package owns:
 | File | Role | Paper reference |
 | --- | --- | --- |
 | `get_score_metrics.py` | `LikelihoodEvaluator` — bootstrap particle filter + rejuvenation + distance-kernel pseudo-likelihood. The class's `evaluate_likelihood(...)` method returns the per-trajectory and aggregate kernel score used by the agent. | §4.3 + Eq. 7 + App. A |
-| `model_disagreement.py` | `DisagreementDetector` (per-context aggregation) + `committee_prediction_entropy` (global QBC signal, Eq. 9). | §4.4 + Eq. 9 |
-| `belief_quality_scorer.py` | Oracle diagnostic — compares particle beliefs against ground-truth states. **Not** used in the production scoring loop (would break the obs-only setting); kept for calibration scripts only. | App. E (validation) |
+| `model_disagreement.py` | `DisagreementDetector` (per-context aggregation) + `committee_prediction_entropy` (global QBC signal, Eq. 8). | §4.4 + Eq. 8 |
+| `belief_quality_scorer.py` | Oracle diagnostic — compares particle beliefs against ground-truth states. **Not** used in the production scoring loop (would break the obs-only setting); kept for calibration scripts only. | — |
 
 ## Scoring modes (`LikelihoodEvaluator.scoring_mode`)
 
@@ -39,7 +39,7 @@ For a candidate model `m` and an episode `(o_0, a_0, …, o_H)`:
    * Predict observation: `ô_{t+1}^i = O^m(s_{t+1}^i, a_t)`.
    * Weight by kernel: `w_{t+1}^i ∝ exp(-d(ô_{t+1}^i, o_{t+1}) / κ)`.
    * Resample if effective-sample-size falls below threshold.
-   * Optionally rejuvenate (App. B.2).
+   * Optionally rejuvenate (App. A.2).
 3. Accumulate the per-step log normalising constant. The model score is
    the posterior expected log-likelihood (paper Eq. 7).
 

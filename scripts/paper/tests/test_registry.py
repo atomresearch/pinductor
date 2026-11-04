@@ -1,4 +1,13 @@
-"""Tests registry : insert, claim, dedup, resume."""
+"""Tests for the run registry.
+
+Two groups of tests, with different stakes. The first covers ordinary
+bookkeeping: inserting, claiming, listing and counting rows. The second
+pins the invariant the whole design rests on — a measured result is never
+destroyed — at both levels where it is enforced, the Python guards and the
+database trigger. Those tests exist because the failure they prevent is
+silent: a campaign that loses a successful episode to a retry still
+finishes, and reports a lower number.
+"""
 from __future__ import annotations
 
 import os
@@ -82,7 +91,7 @@ def test_upsert_then_claim_roundtrip() -> None:
         overrides={"gamma": 0.98},
     )
     assert rid > 0
-    # Idempotent : 2e appel retourne le même id
+    # Idempotent: a second call returns the same id.
     rid2 = r.upsert_pending(
         exp_id="E1", env="lava", condition="ours", seed=0, episode_idx=0,
         hp_hash="h0", llm_model="qwen/qwen3.6-plus",
@@ -90,15 +99,15 @@ def test_upsert_then_claim_roundtrip() -> None:
     )
     assert rid2 == rid
 
-    # Claim : pending → running
+    # pending -> running
     assert r.try_claim(rid, hostname="h", git_sha="sha") is True
-    # 2e claim sur même id échoue
+    # A second claim on the same row fails.
     assert r.try_claim(rid, hostname="h2", git_sha="sha") is False
 
 
 def test_dedup_finds_existing_done() -> None:
     r = _fresh()
-    # E1 a fait un run done
+    # One experiment completes an episode.
     rid1 = r.upsert_pending(
         exp_id="E1", env="lava", condition="ours", seed=0, episode_idx=0,
         hp_hash="h42", llm_model="qwen",
@@ -110,7 +119,7 @@ def test_dedup_finds_existing_done() -> None:
         prompt_tokens=1000, completion_tokens=500, cost_usd=0.0015,
         wall_seconds=45.0, output_dir="/tmp/foo",
     )
-    # E4 insère un pending avec même (env, cond, seed, ep, hash)
+    # Another asks for the same episode under the same hash.
     rid2 = r.upsert_pending(
         exp_id="E4", env="lava", condition="ours", seed=0, episode_idx=0,
         hp_hash="h42", llm_model="qwen",
@@ -122,7 +131,7 @@ def test_dedup_finds_existing_done() -> None:
     )
     assert src is not None
     r.mark_dedup(rid2, src)
-    # Vérifie les metrics recopiées
+    # The metrics are copied onto the deduplicated row.
     with sqlite3.connect(r.db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM runs WHERE id=?", (rid2,)).fetchone()
@@ -159,9 +168,9 @@ def test_list_pending_and_resume() -> None:
         )
     pending = r.list_pending()
     assert len(pending) == 3
-    # Simule un crash : 1 passe à failed
+    # Simulate a crash on one of them.
     r.mark_failure(pending[0]["id"], status="failed", error="boom")
-    # failed doit toujours apparaître dans list_pending (= candidat retry)
+    # A failed row is still work to be done.
     again = r.list_pending()
     assert len(again) == 3
     statuses = {row["status"] for row in again}
@@ -214,9 +223,9 @@ def _row(r: Registry, rid: int) -> sqlite3.Row:
         return conn.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()
 
 
-# Anti-overwrite guard: a `done` row with a valid reward must never be
-# silently downgraded by a subsequent retry that timed out. These tests pin
-# the contract on `Registry.mark_failure` and `Registry.mark_done`.
+# The anti-overwrite contract of `mark_failure` and `mark_done`: a done
+# row holding a reward must survive any later retry, whatever that retry
+# reports.
 
 
 def test_mark_failure_refuses_to_overwrite_done_with_reward() -> None:

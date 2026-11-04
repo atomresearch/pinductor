@@ -1,16 +1,16 @@
-"""E2 full sweep figure : 4 envs × 6 NDs × 3 conditions.
+"""Sample-efficiency figure: 4 envs x 6 demonstration counts x 3 conditions.
 
-Layout : single x-axis with sequential per-env blocks. Within each
-env block, ND ∈ {2, 4, 6, 8, 10, 12} groups, each group holding 3
-bars (ours / curtis_their / tabular). Vertical dotted line between
-env blocks.
+Layout: one x-axis divided into per-environment blocks separated by a
+dotted line. Within a block, one group per demonstration count, each
+holding one bar per condition. The y-axis is the mean episode reward with
+its standard error, and the success rate is annotated above each bar.
 
-y-axis : mean episode reward (mean ± SEM). WR annotated above each
-bar.
-
-Disk-scan fallback : when an (exp_id, env, cond) bucket has < 30
-rows in the registry, augment from the on-disk ``result.json``
-files using best-per-(seed, ep) anti-regression dedup.
+Falls back to scanning the run directories on disk when a bucket holds
+fewer rows in the registry than the protocol expects. The ``result.json``
+files are written per run and survive independently of the database, so
+they can complete a registry that lost rows. Duplicates found this way are
+resolved per (seed, episode) by keeping the best result, matching what the
+registry itself does on a retry.
 """
 from __future__ import annotations
 
@@ -108,9 +108,9 @@ def main() -> int:
                     data[(env, nd, cond)] = (mean, sem, wr, n)
     conn.close()
 
-    # Layout : x positions for each (env, nd, cond) bar
-    # Within an env block : 6 NDs × 3 conds = 18 bars + 3 spacing
-    # Between env blocks : separator gap
+    # Bar positions are computed rather than left to matplotlib, since the
+    # x-axis nests three levels: environment, demonstration count,
+    # condition.
     bar_w = 0.25
     nd_spacing = bar_w * len(CONDS) + 0.4   # space per ND group (3 bars + small pad)
     env_gap = nd_spacing * 0.6              # gap between envs
