@@ -15,10 +15,6 @@
   <img src="docs/assets/pipeline-light.svg" width="100%" alt="The Pinductor pipeline: state-free trajectories and model templates prompt an LLM to propose POMDP components; a particle filter scores them against observations and feeds refinement back; the selected model drives a POMDP solver online, and episodes return to the replay buffer">
 </picture>
 <sub><i>The Pinductor pipeline, as in the paper.</i></sub>
-
-<a href="https://mtsfj.github.io/articles/pinductor.html"><img src="https://mtsfj.github.io/assets/cover_pinductor.webp" width="420" alt="Interactive explainer of the method"></a><br>
-<sub><b><a href="https://mtsfj.github.io/articles/pinductor.html">Interactive explainer</a></b>: step through the induction loop, the particle filter and the planner in the browser.</sub>
-
 </div>
 
 ---
@@ -36,34 +32,18 @@ PopGym MineSweeper, and the learned baselines it compares against.
 <p align="center"><img src="docs/assets/main-results.svg" width="720" alt="Main task performance: mean return of Pinductor and the baselines on five MiniGrid environments, Block and MineSweeper, with 95% intervals for Pinductor and POMDP Coder and the optimal reference dashed"></p>
 <p align="center"><sub><i>Main task performance (paper, redrawn for the NeurIPS poster): mean return, 95% intervals for Pinductor and POMDP Coder, optimal reference dashed. Pinductor is comparable to POMDP Coder without ever accessing hidden states.</i></sub></p>
 
-```
-                         ┌──────────────────────────────┐
-                         │  Offline replay buffer       │
-                         │  (a_t, o_{t+1}, r_{t+1}, …)  │
-                         └──────────────┬───────────────┘
-                                        │
-                                        ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │  REx loop  (paper Algorithm 1)                               │
-   │   ┌────────────────┐    ┌────────────────────────────┐       │
-   │   │ UCB1 parent    │───▶│ LLM proposes m_jk          │       │
-   │   │ select (Eq.16) │    │ (joint TROI, requery_joint)│       │
-   │   └────────────────┘    └──────────────┬─────────────┘       │
-   │            ▲                            │                    │
-   │            │  S_jk, D_jk, Q_jk          ▼                    │
-   │            │              ┌─────────────────────────────┐    │
-   │            │              │ Particle filter score       │    │
-   │            │              │ LikelihoodEvaluator Eq. 5/7 │    │
-   │            │              │ + QBC vote entropy (Eq. 8)  │    │
-   │            └──────────────┴─────────────┬───────────────┘    │
-   │                                          ▼                   │
-   │                              Near-best softmax m* (Eq. 17-18)│
-   └─────────────────────────────┬────────────────────────────────┘
-                                 │
-                                 ▼
-       Online deployment: PO_DAStar planner over particle belief
-       (paper §4.5)
-```
+### The loop in the code
+
+| Step | Paper | Code |
+|:--|:--|:--|
+| Pick a parent model to refine (UCB1) | Eq. 16 | [`rex_helpers.py`](uncertain_worms/policies/rex_helpers.py) · `ucb1_select` |
+| The LLM proposes new POMDP components | Alg. 1 | [`base_policy.py`](uncertain_worms/policies/base_policy.py) · `requery_joint` |
+| Score each candidate against observations with a particle filter | Eqs. 5, 7 | [`get_score_metrics.py`](particle_filtering/get_score_metrics.py) · `LikelihoodEvaluator` |
+| Measure committee disagreement (vote entropy) | Eq. 8 | [`model_disagreement.py`](particle_filtering/model_disagreement.py) |
+| Select the final model (near-best set, softmax) | Eqs. 17–18 | [`partially_obs_planning_agent.py`](uncertain_worms/policies/partially_obs_planning_agent.py) · `joint_update_models_rex` |
+| Plan online over the particle belief | §4.5 | [`PO_DAStar.py`](uncertain_worms/planners/PO_DAStar.py) |
+
+The full paper-to-code map, with every hyperparameter, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 📘 **Start here**: [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the
 five-minute install + smoke walkthrough.
