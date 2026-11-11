@@ -1,7 +1,27 @@
-# Pinductor — Learning POMDP World Models from Observations with Language-Model Priors
+<div align="center">
 
-Code release for the accompanying paper *Learning POMDP World Models from
-Observations with Language-Model Priors*.
+# Pinductor
+
+**Learning POMDP World Models from Observations with Language-Model Priors**
+
+<a href="https://arxiv.org/abs/2605.13740"><img src="https://img.shields.io/badge/NeurIPS-2026%20%C2%B7%20poster-5b3fd1?style=flat-square" alt="NeurIPS 2026 poster"></a>
+<a href="https://arxiv.org/abs/2605.13740"><img src="https://img.shields.io/badge/arXiv-2605.13740-b31b1b?style=flat-square&logo=arxiv&logoColor=white" alt="arXiv 2605.13740"></a>
+<a href="https://mtsfj.github.io/articles/pinductor.html"><img src="https://img.shields.io/badge/interactive-explainer-f0883e?style=flat-square" alt="Interactive explainer"></a>
+<img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11 | 3.12">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950?style=flat-square" alt="MIT license"></a>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pipeline-dark.svg">
+  <img src="docs/assets/pipeline-light.svg" width="100%" alt="The Pinductor pipeline: state-free trajectories and model templates prompt an LLM to propose POMDP components; a particle filter scores them against observations and feeds refinement back; the selected model drives a POMDP solver online, and episodes return to the replay buffer">
+</picture>
+<sub><i>The Pinductor pipeline, as in the paper.</i></sub>
+
+<a href="https://mtsfj.github.io/articles/pinductor.html"><img src="https://mtsfj.github.io/assets/cover_pinductor.webp" width="420" alt="Interactive explainer of the method"></a><br>
+<sub><b><a href="https://mtsfj.github.io/articles/pinductor.html">Interactive explainer</a></b>: step through the induction loop, the particle filter and the planner in the browser.</sub>
+
+</div>
+
+---
 
 Pinductor uses a large language model as a prior over executable POMDP
 programs, and refines the proposals against a particle-filtered kernel
@@ -12,6 +32,9 @@ Curtis et al. (2025) on MiniGrid while operating strictly from
 observations, actions, and rewards. The release also covers the two
 further suites of the paper, a partially observable Blocks World and
 PopGym MineSweeper, and the learned baselines it compares against.
+
+<p align="center"><img src="docs/assets/main-results.svg" width="720" alt="Main task performance: mean return of Pinductor and the baselines on five MiniGrid environments, Block and MineSweeper, with 95% intervals for Pinductor and POMDP Coder and the optimal reference dashed"></p>
+<p align="center"><sub><i>Main task performance (paper, redrawn for the NeurIPS poster): mean return, 95% intervals for Pinductor and POMDP Coder, optimal reference dashed. Pinductor is comparable to POMDP Coder without ever accessing hidden states.</i></sub></p>
 
 ```
                          ┌──────────────────────────────┐
@@ -30,7 +53,7 @@ PopGym MineSweeper, and the learned baselines it compares against.
    │            │  S_jk, D_jk, Q_jk          ▼                    │
    │            │              ┌─────────────────────────────┐    │
    │            │              │ Particle filter score       │    │
-   │            │              │ LikelihoodEvaluator (Eq. 5 / 7)   │    │
+   │            │              │ LikelihoodEvaluator Eq. 5/7 │    │
    │            │              │ + QBC vote entropy (Eq. 8)  │    │
    │            └──────────────┴─────────────┬───────────────┘    │
    │                                          ▼                   │
@@ -820,7 +843,19 @@ equally good and the filter will learn nothing from what it sees.
 
 Released under the **MIT License** (see `LICENSE`).
 
-If you use this codebase, please cite:
+If you use this codebase, please cite the NeurIPS 2026 paper:
+
+```bibtex
+@inproceedings{six2026pinductor,
+      title={Pinductor: Learning {POMDP} World Models from Observations with Language-Model Priors},
+      author={Valentin Six and Frederik Panse and Mathis Fajeau and Lancelot Da Costa and Mridul Sharma and Alfonso Amayuelas and Tim Z. Xiao and David Hyland and Philipp Hennig and Bernhard Sch{\"o}lkopf},
+      booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+      year={2026},
+      note={arXiv:2605.13740}
+}
+```
+
+The arXiv preprint:
 
 ```bibtex
 @misc{six2026learningpomdpworldmodels,
